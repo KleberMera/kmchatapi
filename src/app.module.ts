@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { WhatsappModule } from './modules/whatsapp/whatsapp.module.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
       entities: [],
       synchronize: true, // solo para desarrollo; en producción ponlo en false
     }),
+    WhatsappModule
   ],
   controllers: [AppController],
   providers: [AppService],
