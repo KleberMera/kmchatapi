@@ -1,4 +1,12 @@
-import { Body, Controller, Delete, Get, Param, Post, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Res,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import * as QRCode from 'qrcode';
 import { SessionManagerService } from './session-manager.service.js';
@@ -13,6 +21,13 @@ export class SessionManagerController {
   @Post()
   async create(@Body() body: { userId: string; name: string }) {
     return this.sessionManager.createSession(body.userId, body.name);
+  }
+
+  // GET /sessions/user/:userId
+  // Devuelve todas las sesiones de WhatsApp que pertenecen a un usuario.
+  @Get('user/:userId')
+  async findByUser(@Param('userId') userId: string) {
+    return this.sessionManager.findSessionsByUserId(userId);
   }
 
   // GET /sessions/:sessionId/status
@@ -66,5 +81,46 @@ export class SessionManagerController {
   async remove(@Param('sessionId') sessionId: string) {
     await this.sessionManager.deleteSession(sessionId);
     return { deleted: true, sessionId };
+  }
+
+  // GET /sessions/:sessionId/qr
+  // Devuelve el QR como Data URL (base64) en JSON, o null si no hay QR.
+  // El frontend lo usa para mostrar el QR dentro de su propia UI.
+  @Get(':sessionId/qr')
+  async qrJson(@Param('sessionId') sessionId: string) {
+    const qr = this.sessionManager.getQr(sessionId);
+    const status = await this.sessionManager.getSessionStatus(sessionId);
+
+    // Si no hay QR, devolvemos la info necesaria para que el frontend
+    // decida qué mostrar (por ejemplo: "ya está conectada" o "esperando QR").
+    if (!qr) {
+      return {
+        hasQr: false,
+        status: status.status,
+        qr: null,
+      };
+    }
+
+    // Generamos la imagen del QR como Data URL (base64)
+    const dataUrl = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
+
+    return {
+      hasQr: true,
+      status: status.status,
+      qr: dataUrl, // string base64 listo para <img src="...">
+    };
+  }
+
+  // POST /sessions/:sessionId/restart
+  // Re-inicializa el cliente si no está activo en memoria.
+  // Útil cuando la sesión quedó en 'P' tras un reinicio del servidor.
+  @Post(':sessionId/restart')
+  async restart(@Param('sessionId') sessionId: string) {
+    const session = await this.sessionManager.getSessionStatus(sessionId);
+    if (session.status === 'R') {
+      return { restarted: false, message: 'La sesión ya está conectada' };
+    }
+    await this.sessionManager.restartSession(sessionId);
+    return { restarted: true, sessionId };
   }
 }

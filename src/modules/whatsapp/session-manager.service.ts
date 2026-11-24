@@ -107,8 +107,10 @@ export class SessionManagerService implements OnModuleInit {
         authStrategy,
         webVersionCache: {
           type: 'remote',
+          // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
           remotePath:
-            'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
+            // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1055762171-alpha.html',
+              'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
         },
         puppeteer: {
           headless: true,
@@ -201,7 +203,8 @@ export class SessionManagerService implements OnModuleInit {
         try {
           await authStrategy.logout();
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           const stack = error instanceof Error ? error.stack : undefined;
           this.logger.error(
             `Error borrando credenciales de ${sessionId}: ${message}`,
@@ -291,5 +294,41 @@ export class SessionManagerService implements OnModuleInit {
     }
     this.pendingQrs.delete(sessionId);
     await this.sessionRepo.delete({ sessionId });
+  }
+
+  // Devuelve todas las sesiones de WhatsApp que pertenecen a un usuario.
+  // Consulta la BD por userId y devuelve la lista (puede estar vacía).
+  async findSessionsByUserId(userId: string) {
+    const sessions = await this.sessionRepo.find({
+      where: { userId },
+      order: { id: 'DESC' },
+    });
+
+    // Añadimos un campo calculado 'isActive' que indica si el cliente
+    // está corriendo en memoria en este momento.
+    return sessions.map((s) => ({
+      ...s,
+      isActive: this.clients.has(s.sessionId),
+    }));
+  }
+
+  // Reinicia el cliente de una sesión si no está activo en memoria.
+  // Busca el userId en la BD y vuelve a llamar a initializeClient.
+  async restartSession(sessionId: string): Promise<void> {
+    if (this.clients.has(sessionId)) {
+      return; // Ya está activo, no hacemos nada
+    }
+    const session = await this.sessionRepo.findOne({ where: { sessionId } });
+    if (!session) {
+      throw new NotFoundException(`Sesión ${sessionId} no encontrada`);
+    }
+    // Volvemos a poner el estado en Pending y arrancamos el cliente
+    await this.sessionRepo.update(
+      { sessionId },
+      { status: SESSION_STATUS.PENDING },
+    );
+    this.initializeClient(sessionId, session.userId).catch((err) =>
+      this.logger.error(`Error reiniciando ${sessionId}: ${err.message}`),
+    );
   }
 }
