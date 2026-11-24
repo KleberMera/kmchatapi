@@ -13,8 +13,11 @@ import { WhatsappSession } from './modules/whatsapp/entities/whatsapp-session.en
       type: 'postgres',
       host: process.env.DB_HOST ?? 'localhost',
       port: Number(process.env.DB_PORT ?? 5432),
-      username: process.env.DB_USER ?? 'postgres',
-      password: process.env.DB_PASSWORD ?? '0928213727',
+      
+      // username: process.env.DB_USER ?? 'postgres',
+      // password: process.env.DB_PASSWORD ?? '0928213727',
+      username: process.env.DB_USER ?? 'server',
+      password: process.env.DB_PASSWORD ?? 'Server2026%lalibertad..',
       database: process.env.DB_NAME ?? 'kmchat',
       entities: [User, WhatsappSession],
       synchronize: true,
