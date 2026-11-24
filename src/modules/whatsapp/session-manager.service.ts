@@ -97,10 +97,21 @@ export class SessionManagerService implements OnModuleInit {
         // LocalAuth aísla las credenciales en una carpeta distinta por clientId.
         // La carpeta resultante será .wwebjs_auth/session-{sessionId}
         authStrategy: new LocalAuth({ clientId: sessionId }),
+        webVersionCache: {
+          type: 'remote',
+          remotePath:
+            'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
+        },
         puppeteer: {
           headless: true,
           // Flags necesarios en Linux/servidores sin entorno gráfico o como root
-          args: ['--no-sandbox', '--disable-setuid-sandbox'],
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+          ],
           // Timeout más largo (60s) para dar margen a WhatsApp Web a cargar.
           // El valor por defecto de 30s a veces no es suficiente en la primera ejecución.
           //timeout: 60000,
