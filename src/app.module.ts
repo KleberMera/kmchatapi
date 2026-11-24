@@ -3,6 +3,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { WhatsappModule } from './modules/whatsapp/whatsapp.module.js';
 import { User } from './modules/whatsapp/entities/user.entity.js';
 import { WhatsappSession } from './modules/whatsapp/entities/whatsapp-session.entity.js';
+import { UsersModule } from './modules/users/users.module.js';
+import { AuthModule } from './modules/auth/auth.module.js';
 
 @Module({
   imports: [
@@ -11,14 +13,11 @@ import { WhatsappSession } from './modules/whatsapp/entities/whatsapp-session.en
     // synchronize: true crea/actualiza las tablas automáticamente (solo desarrollo).
     TypeOrmModule.forRoot({
       type: 'postgres',
-      host: process.env.DB_HOST ?? 'localhost',
-      port: Number(process.env.DB_PORT ?? 5432),
-      
-      // username: process.env.DB_USER ?? 'postgres',
-      // password: process.env.DB_PASSWORD ?? '0928213727',
-      username: process.env.DB_USER ?? 'server',
-      password: process.env.DB_PASSWORD ?? 'Server2026%lalibertad..',
-      database: process.env.DB_NAME ?? 'kmchat',
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT),
+      username: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
       entities: [User, WhatsappSession],
       synchronize: true,
       logging: false,
@@ -26,6 +25,8 @@ import { WhatsappSession } from './modules/whatsapp/entities/whatsapp-session.en
 
     // Módulo de WhatsApp con el gestor de sesiones
     WhatsappModule,
+    UsersModule,
+    AuthModule,
   ],
 })
 export class AppModule {}
