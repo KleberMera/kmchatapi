@@ -18,6 +18,6 @@ async function bootstrap() {
   // Filtro global para envolver errores en el mismo formato
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  await app.listen(process.env.PORT ?? 2210);
+  await app.listen(process.env.PORT ?? 2260);
 }
 await bootstrap();
