@@ -1,7 +1,15 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { NestFactory, Reflector } from '@nestjs/core';
-import { AppModule } from './app.module.js';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor.js';
 import { HttpExceptionFilter } from './common/interceptors/http-exception.filter.js';
+
+const envPath = fileURLToPath(new URL('../.env', import.meta.url));
+if (existsSync(envPath)) {
+  process.loadEnvFile(envPath);
+}
+
+const { AppModule } = await import('./app.module.js');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
