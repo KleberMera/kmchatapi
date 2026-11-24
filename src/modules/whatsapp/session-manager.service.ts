@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   OnModuleInit,
@@ -56,7 +57,12 @@ export class SessionManagerService implements OnModuleInit {
 
   // Crea una nueva sesión de WhatsApp para un usuario.
   // Genera un sessionId seguro, lo guarda en BD y arranca el cliente.
-  async createSession(userId: string): Promise<WhatsappSession> {
+  async createSession(userId: string, name: string): Promise<WhatsappSession> {
+    const sessionName = name?.trim();
+    if (!sessionName) {
+      throw new BadRequestException('El nombre de la sesión es obligatorio');
+    }
+
     // Generamos un ID único y seguro para LocalAuth.
     // Solo usamos caracteres alfanuméricos para evitar problemas con rutas.
     const sessionId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
@@ -64,6 +70,7 @@ export class SessionManagerService implements OnModuleInit {
     // Guardamos el registro en la BD primero, con estado Pending
     const session = this.sessionRepo.create({
       sessionId,
+      name: sessionName,
       userId,
       status: SESSION_STATUS.PENDING,
     });
@@ -93,10 +100,11 @@ export class SessionManagerService implements OnModuleInit {
     // Así, onModuleInit puede esperar realmente a que una sesión termine
     // antes de pasar a la siguiente (serialización).
     return new Promise((resolve, reject) => {
+      const authStrategy = new LocalAuth({ clientId: sessionId });
       const client = new Client({
         // LocalAuth aísla las credenciales en una carpeta distinta por clientId.
         // La carpeta resultante será .wwebjs_auth/session-{sessionId}
-        authStrategy: new LocalAuth({ clientId: sessionId }),
+        authStrategy,
         webVersionCache: {
           type: 'remote',
           remotePath:
@@ -190,6 +198,17 @@ export class SessionManagerService implements OnModuleInit {
       client.on('disconnected', async (reason: WAState | 'LOGOUT') => {
         this.clients.delete(sessionId);
         this.pendingQrs.delete(sessionId);
+        try {
+          await authStrategy.logout();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const stack = error instanceof Error ? error.stack : undefined;
+          this.logger.error(
+            `Error borrando credenciales de ${sessionId}: ${message}`,
+            stack,
+          );
+        }
+
         await this.sessionRepo.update(
           { sessionId },
           { status: SESSION_STATUS.DISCONNECTED },

@@ -7,12 +7,12 @@ import { SessionManagerService } from './session-manager.service.js';
 export class SessionManagerController {
   constructor(private readonly sessionManager: SessionManagerService) {}
 
-  // POST /sessions (body: { userId })
+  // POST /sessions (body: { userId, name })
   // Crea una nueva sesión de WhatsApp para un usuario.
   // Devuelve el registro de la sesión con su sessionId.
   @Post()
-  async create(@Body() body: { userId: string }) {
-    return this.sessionManager.createSession(body.userId);
+  async create(@Body() body: { userId: string; name: string }) {
+    return this.sessionManager.createSession(body.userId, body.name);
   }
 
   // GET /sessions/:sessionId/status

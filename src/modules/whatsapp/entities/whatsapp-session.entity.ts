@@ -14,6 +14,10 @@ export class WhatsappSession {
   @Column({ unique: true })
   sessionId: string;
 
+  // Nombre visible de la sesión. Nullable para conservar sesiones existentes.
+  @Column({ nullable: true })
+  name: string | null;
+
   // Número de teléfono vinculado (se llena cuando el cliente está ready).
   // Nullable porque al crear la sesión aún no hay número.
   @Column({ nullable: true })
