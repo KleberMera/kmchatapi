@@ -21,6 +21,14 @@ const { Client, LocalAuth } = wwjs;
 type WAClient = whatsappWeb.Client;
 type WAState = whatsappWeb.WAState;
 
+function isResourceBusy(error: unknown): boolean {
+  if (error instanceof Error && error.message.includes('EBUSY')) {
+    return true;
+  }
+
+  return typeof error === 'string' && error.includes('EBUSY');
+}
+
 @Injectable()
 export class SessionManagerService implements OnModuleInit {
   private readonly logger = new Logger(SessionManagerService.name);
@@ -100,11 +108,38 @@ export class SessionManagerService implements OnModuleInit {
     // Así, onModuleInit puede esperar realmente a que una sesión termine
     // antes de pasar a la siguiente (serialización).
     return new Promise((resolve, reject) => {
-      const authStrategy = new LocalAuth({ clientId: sessionId });
+      const authStrategy = new LocalAuth({
+        clientId: sessionId,
+        rmMaxRetries: 10,
+      });
+      const logoutAuth = authStrategy.logout.bind(authStrategy);
+      authStrategy.logout = async () => {
+        try {
+          await logoutAuth();
+        } catch (error) {
+          if (!isResourceBusy(error)) {
+            throw error;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          try {
+            await logoutAuth();
+          } catch (retryError) {
+            if (!isResourceBusy(retryError)) {
+              throw retryError;
+            }
+
+            this.logger.warn(
+              `No se pudo borrar todavía el perfil de ${sessionId}: Chromium mantiene archivos bloqueados`,
+            );
+          }
+        }
+      };
+
       const client = new Client({
         // LocalAuth aísla las credenciales en una carpeta distinta por clientId.
         // La carpeta resultante será .wwebjs_auth/session-{sessionId}
-        authStrategy: new LocalAuth({ clientId: sessionId }),
+        authStrategy,
         webVersionCache: {
           type: 'remote',
           // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
@@ -197,34 +232,45 @@ export class SessionManagerService implements OnModuleInit {
       // Si ocurre durante la inicialización (el cliente aún no está en el mapa),
       // rechazamos la promesa. Si ocurre después (ya estaba listo), solo
       // actualizamos el estado en BD y limpiamos el mapa.
+      let disconnectHandled = false;
       client.on('disconnected', async (reason: WAState | 'LOGOUT') => {
+        if (disconnectHandled) return;
+        disconnectHandled = true;
+
         this.clients.delete(sessionId);
         this.pendingQrs.delete(sessionId);
-        try {
-          await authStrategy.logout();
-        } catch (error) {
+
+        void (async () => {
+          if (reason !== 'LOGOUT') {
+            // whatsapp-web.js ya inicia destroy() tras emitir este evento.
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await authStrategy.logout();
+          }
+
+          await this.sessionRepo.update(
+            { sessionId },
+            { status: SESSION_STATUS.DISCONNECTED },
+          );
+          this.logger.warn(`Sesión ${sessionId} desconectada: ${reason}`);
+
+          // Solo rechazamos si aún no se había resuelto (estaba inicializando)
+          if (!settled) {
+            settled = true;
+            reject(
+              new Error(
+                `Disconnected durante init en ${sessionId}: ${reason}`,
+              ),
+            );
+          }
+        })().catch((error: unknown) => {
           const message =
             error instanceof Error ? error.message : String(error);
           const stack = error instanceof Error ? error.stack : undefined;
           this.logger.error(
-            `Error borrando credenciales de ${sessionId}: ${message}`,
+            `Error procesando desconexión de ${sessionId}: ${message}`,
             stack,
           );
-        }
-
-        await this.sessionRepo.update(
-          { sessionId },
-          { status: SESSION_STATUS.DISCONNECTED },
-        );
-        this.logger.warn(`Sesión ${sessionId} desconectada: ${reason}`);
-
-        // Solo rechazamos si aún no se había resuelto (estaba inicializando)
-        if (!settled) {
-          settled = true;
-          reject(
-            new Error(`Disconnected durante init en ${sessionId}: ${reason}`),
-          );
-        }
+        });
       });
 
       // initialize() arranca Puppeteer y comienza a emitir eventos.
