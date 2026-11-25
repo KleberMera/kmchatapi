@@ -1,16 +1,17 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bullmq';
 import { WhatsappModule } from './modules/whatsapp/whatsapp.module.js';
-import { User } from './modules/whatsapp/entities/user.entity.js';
-import { WhatsappSession } from './modules/whatsapp/entities/whatsapp-session.entity.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
+import { BulkModule } from './modules/bulk/bulk.module.js';
+import { User } from './modules/whatsapp/entities/user.entity.js';
+import { WhatsappSession } from './modules/whatsapp/entities/whatsapp-session.entity.js';
+import { BulkBatch } from './modules/bulk/entities/bulk-batch.entity.js';
+import { BulkMessageLog } from './modules/bulk/entities/bulk-message-log.entity.js';
 
 @Module({
   imports: [
-    // Configuración de TypeORM con PostgreSQL.
-    // entities lista todas las entidades que TypeORM debe conocer.
-    // synchronize: true crea/actualiza las tablas automáticamente (solo desarrollo).
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.DB_HOST,
@@ -23,10 +24,18 @@ import { AuthModule } from './modules/auth/auth.module.js';
       logging: false,
     }),
 
-    // Módulo de WhatsApp con el gestor de sesiones
+    // Conexión a Redis para BullMQ
+    BullModule.forRoot({
+      connection: {
+        host: process.env.REDIS_HOST ?? 'localhost',
+        port: Number(process.env.REDIS_PORT ?? 6379),
+      },
+    }),
+
     WhatsappModule,
     UsersModule,
     AuthModule,
+    BulkModule,
   ],
 })
 export class AppModule {}

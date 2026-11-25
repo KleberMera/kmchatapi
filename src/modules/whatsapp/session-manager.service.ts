@@ -105,13 +105,13 @@ export class SessionManagerService implements OnModuleInit {
         // LocalAuth aísla las credenciales en una carpeta distinta por clientId.
         // La carpeta resultante será .wwebjs_auth/session-{sessionId}
         authStrategy: new LocalAuth({ clientId: sessionId }),
-         webVersionCache: {
-           type: 'remote',
+        webVersionCache: {
+          type: 'remote',
           // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
           remotePath:
             'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1055549427-alpha.html',
-        //       // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
-         },
+          //       // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
+        },
         puppeteer: {
           headless: true,
           // Flags necesarios en Linux/servidores sin entorno gráfico o como root
@@ -330,5 +330,66 @@ export class SessionManagerService implements OnModuleInit {
     this.initializeClient(sessionId, session.userId).catch((err) =>
       this.logger.error(`Error reiniciando ${sessionId}: ${err.message}`),
     );
+  }
+
+  // Verifica si UN número tiene WhatsApp usando una sesión concreta.
+  // Devuelve el JID (ej. '593999016890@c.us') si existe, o null si no.
+  async verifyNumber(sessionId: string, phone: string): Promise<string | null> {
+    // Obtenemos el cliente activo de la sesión
+    const client = this.clients.get(sessionId);
+    if (!client) {
+      throw new Error(`La sesión ${sessionId} no está conectada`);
+    }
+
+    // Limpiamos el número: solo dígitos
+    const sanitized = phone.replace(/\D/g, '');
+    if (!sanitized) return null;
+
+    try {
+      // getNumberId devuelve null si el número no tiene WhatsApp
+      const numberId = await client.getNumberId(sanitized);
+      if (!numberId) return null;
+      // _serialized tiene el formato correcto: '593...@c.us'
+      return numberId._serialized;
+    } catch (error: any) {
+      this.logger.error(`Error verificando ${sanitized}: ${error.message}`);
+      return null;
+    }
+  }
+
+  // Verifica una LISTA de números con pausa configurable entre cada uno.
+  // Devuelve los válidos y los inválidos.
+  async verifyNumbers(
+    sessionId: string,
+    numbers: string[],
+    delayMs = 500, // pausa entre verificaciones (parametrizable)
+  ): Promise<{ valid: string[]; invalid: string[] }> {
+    const valid: string[] = [];
+    const invalid: string[] = [];
+
+    for (const raw of numbers) {
+      const sanitized = raw.replace(/\D/g, '');
+      if (!sanitized) {
+        invalid.push(raw);
+        continue;
+      }
+
+      try {
+        const numberId = await this.verifyNumber(sessionId, sanitized);
+        if (numberId) {
+          valid.push(numberId);
+        } else {
+          invalid.push(sanitized);
+        }
+      } catch (error: any) {
+        this.logger.error(`Error verificando ${sanitized}: ${error.message}`);
+        invalid.push(sanitized);
+      }
+
+      // Pausa configurable entre verificaciones
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+
+    return { valid, invalid };
   }
 }

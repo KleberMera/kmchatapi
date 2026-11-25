@@ -123,4 +123,17 @@ export class SessionManagerController {
     await this.sessionManager.restartSession(sessionId);
     return { restarted: true, sessionId };
   }
+
+  // POST /sessions/:sessionId/verify
+  @Post(':sessionId/verify')
+  async verify(
+    @Param('sessionId') sessionId: string,
+    @Body() body: { numbers: string[]; delayMs?: number },
+  ) {
+    return this.sessionManager.verifyNumbers(
+      sessionId,
+      body.numbers,
+      body.delayMs ?? 500,
+    );
+  }
 }
