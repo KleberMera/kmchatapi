@@ -21,6 +21,13 @@ const { Client, LocalAuth } = wwjs;
 type WAClient = whatsappWeb.Client;
 type WAState = whatsappWeb.WAState;
 
+type ManagedClient = {
+  client: WAClient;
+  authStrategy: whatsappWeb.AuthStrategy;
+  initialization: Promise<void>;
+  cancelInitialization: () => void;
+};
+
 function isResourceBusy(error: unknown): boolean {
   if (error instanceof Error && error.message.includes('EBUSY')) {
     return true;
@@ -35,6 +42,10 @@ export class SessionManagerService implements OnModuleInit {
 
   // Mapa en memoria: sessionId (de la BD) -> instancia del Client activo
   private clients = new Map<string, WAClient>();
+
+  private managedClients = new Map<string, ManagedClient>();
+
+  private deletedSessions = new Set<string>();
 
   // Mapa para guardar los QRs pendientes mientras el cliente no está listo
   private pendingQrs = new Map<string, string>();
@@ -101,7 +112,13 @@ export class SessionManagerService implements OnModuleInit {
   ): Promise<void> {
     // Si ya existe un cliente activo para este sessionId, no hacemos nada.
     // Esto evita crear dos navegadores apuntando a la misma sesión.
-    if (this.clients.has(sessionId)) return;
+    if (
+      this.clients.has(sessionId) ||
+      this.managedClients.has(sessionId) ||
+      this.deletedSessions.has(sessionId)
+    ) {
+      return;
+    }
 
     // Devolvemos una Promise que se resolverá cuando el cliente esté 'ready'
     // y se rechazará si falla la autenticación o se desconecta durante el arranque.
@@ -163,13 +180,27 @@ export class SessionManagerService implements OnModuleInit {
         },
       });
 
+      const managedClient: ManagedClient = {
+        client,
+        authStrategy,
+        initialization: Promise.resolve(),
+        cancelInitialization: () => undefined,
+      };
+      this.managedClients.set(sessionId, managedClient);
+
       // Bandera para evitar rechazar la promesa dos veces si se disparan
       // varios eventos de error durante la inicialización.
       let settled = false;
+      managedClient.cancelInitialization = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`Inicialización cancelada para ${sessionId}`));
+      };
 
       // Evento QR: se dispara cuando WhatsApp genera un nuevo código QR.
       // Guardamos el QR en el mapa y lo imprimimos en consola.
       client.on('qr', (qr: string) => {
+        if (this.deletedSessions.has(sessionId)) return;
         this.pendingQrs.set(sessionId, qr);
         this.logger.log(`QR generado para sesión ${sessionId}`);
         qrcode.generate(qr, { small: true });
@@ -179,6 +210,7 @@ export class SessionManagerService implements OnModuleInit {
       // Actualizamos la BD con el número de teléfono y el estado Ready,
       // y resolvemos la promesa para que onModuleInit pueda continuar.
       client.on('ready', async () => {
+        if (this.deletedSessions.has(sessionId)) return;
         // Evitamos resolver dos veces si por alguna razón el evento se repite
         if (settled) return;
         settled = true;
@@ -214,6 +246,7 @@ export class SessionManagerService implements OnModuleInit {
       // Evento auth_failure: la autenticación falló (QR inválido, sesión corrupta).
       // Marcamos la sesión como Failed en BD y rechazamos la promesa.
       client.on('auth_failure', async (msg: string) => {
+        if (this.deletedSessions.has(sessionId)) return;
         if (settled) return;
         settled = true;
 
@@ -239,6 +272,7 @@ export class SessionManagerService implements OnModuleInit {
 
         this.clients.delete(sessionId);
         this.pendingQrs.delete(sessionId);
+        if (this.deletedSessions.has(sessionId)) return;
 
         void (async () => {
           if (reason !== 'LOGOUT') {
@@ -275,7 +309,9 @@ export class SessionManagerService implements OnModuleInit {
 
       // initialize() arranca Puppeteer y comienza a emitir eventos.
       // Si falla el arranque (por ejemplo, Chrome no encontrado), rechazamos.
-      client.initialize().catch((err: any) => {
+      managedClient.initialization = client.initialize();
+      managedClient.initialization.catch((err: unknown) => {
+        if (this.deletedSessions.has(sessionId)) return;
         if (!settled) {
           settled = true;
           reject(err);
@@ -302,6 +338,7 @@ export class SessionManagerService implements OnModuleInit {
   // Devuelve el QR pendiente de una sesión (o null si no hay).
   // El controlador lo usa para renderizar el QR como imagen.
   getQr(sessionId: string): string | null {
+    if (this.deletedSessions.has(sessionId)) return null;
     return this.pendingQrs.get(sessionId) ?? null;
   }
 
@@ -328,17 +365,35 @@ export class SessionManagerService implements OnModuleInit {
 
   // Elimina una sesión: cierra el cliente, borra la carpeta de auth y el registro en BD.
   async deleteSession(sessionId: string): Promise<void> {
-    const client = this.clients.get(sessionId);
-    if (client) {
-      try {
-        // logout() también borra la carpeta de sesión con LocalAuth
-        await client.logout();
-      } catch (err) {
-        this.logger.error(`Error cerrando cliente ${sessionId}: ${err}`);
-      }
-      this.clients.delete(sessionId);
-    }
+    this.deletedSessions.add(sessionId);
+    this.clients.delete(sessionId);
     this.pendingQrs.delete(sessionId);
+
+    const managedClient = this.managedClients.get(sessionId);
+    if (managedClient) {
+      managedClient.cancelInitialization();
+      try {
+        await managedClient.client.destroy();
+      } catch (error) {
+        this.logger.error(`Error cerrando cliente ${sessionId}: ${error}`);
+      }
+
+      await managedClient.initialization.catch(() => undefined);
+
+      try {
+        await managedClient.client.destroy();
+        await managedClient.authStrategy.logout();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(
+          `Error eliminando cliente y credenciales ${sessionId}: ${message}`,
+          stack,
+        );
+      }
+      this.managedClients.delete(sessionId);
+    }
+
     await this.sessionRepo.delete({ sessionId });
   }
 
@@ -368,6 +423,7 @@ export class SessionManagerService implements OnModuleInit {
     if (!session) {
       throw new NotFoundException(`Sesión ${sessionId} no encontrada`);
     }
+    this.deletedSessions.delete(sessionId);
     // Volvemos a poner el estado en Pending y arrancamos el cliente
     await this.sessionRepo.update(
       { sessionId },
@@ -397,9 +453,11 @@ export class SessionManagerService implements OnModuleInit {
       if (!numberId) return null;
       // _serialized tiene el formato correcto: '593...@c.us'
       return numberId._serialized;
-    } catch (error: any) {
-      this.logger.error(`Error verificando ${sanitized}: ${error.message}`);
-      return null;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(`Error verificando ${sanitized}: ${message}`, stack);
+      throw error;
     }
   }
 
@@ -409,9 +467,10 @@ export class SessionManagerService implements OnModuleInit {
     sessionId: string,
     numbers: string[],
     delayMs = 500, // pausa entre verificaciones (parametrizable)
-  ): Promise<{ valid: string[]; invalid: string[] }> {
+  ): Promise<{ valid: string[]; invalid: string[]; failed: string[] }> {
     const valid: string[] = [];
     const invalid: string[] = [];
+    const failed: string[] = [];
 
     for (const raw of numbers) {
       const sanitized = raw.replace(/\D/g, '');
@@ -427,15 +486,16 @@ export class SessionManagerService implements OnModuleInit {
         } else {
           invalid.push(sanitized);
         }
-      } catch (error: any) {
-        this.logger.error(`Error verificando ${sanitized}: ${error.message}`);
-        invalid.push(sanitized);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Error verificando ${sanitized}: ${message}`);
+        failed.push(sanitized);
       }
 
       // Pausa configurable entre verificaciones
       await new Promise((r) => setTimeout(r, delayMs));
     }
 
-    return { valid, invalid };
+    return { valid, invalid, failed };
   }
 }

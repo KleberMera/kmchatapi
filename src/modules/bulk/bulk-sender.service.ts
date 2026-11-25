@@ -125,10 +125,35 @@ export class BulkSenderService {
         }
 
         // 1. Verificar si el número tiene WhatsApp
-        const numberId = await this.sessionManager.verifyNumber(
-          sessionId,
-          phone,
-        );
+        let numberId: string | null;
+        try {
+          numberId = await this.sessionManager.verifyNumber(sessionId, phone);
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            `No se pudo verificar ${phone} con ${sessionId}: ${errorMessage}. Probando otra sesión...`,
+          );
+          await this.logRepo.save({
+            batchId,
+            phoneNumber: phone,
+            sessionId,
+            status: 'FAILED',
+            errorMessage: `Error de verificación: ${errorMessage}`,
+          });
+
+          if (!this.sessionManager['clients'].has(sessionId)) {
+            activeSessions.splice(currentSessionIndex, 1);
+            if (activeSessions.length === 0) break;
+            currentSessionIndex = currentSessionIndex % activeSessions.length;
+          } else {
+            attempts++;
+            currentSessionIndex =
+              (currentSessionIndex + 1) % activeSessions.length;
+          }
+          await new Promise((r) => setTimeout(r, verifyDelayMs));
+          continue;
+        }
 
         if (!numberId) {
           await this.logRepo.save({
@@ -140,6 +165,8 @@ export class BulkSenderService {
           });
           batch.invalid++;
           sent = true;
+          currentSessionIndex =
+            (currentSessionIndex + 1) % activeSessions.length;
           break;
         }
 

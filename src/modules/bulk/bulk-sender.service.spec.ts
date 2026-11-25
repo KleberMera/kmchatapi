@@ -39,7 +39,9 @@ describe('BulkSenderService', () => {
         ['session-a', {}],
         ['session-b', {}],
       ]),
-      verifyNumber: vi.fn(async (_sessionId: string, phone: string) => phone),
+      verifyNumber: vi
+        .fn(async (_sessionId: string, phone: string) => phone)
+        .mockRejectedValueOnce(new Error('sendIq called before startComms')),
       sendMessage: vi.fn(
         async (_sessionId: string, _phone: string, _message: string) =>
           undefined,
@@ -57,7 +59,15 @@ describe('BulkSenderService', () => {
 
     expect(
       sessionManagerMock.sendMessage.mock.calls.map(([sessionId]) => sessionId),
-    )
-      .toEqual(['session-a', 'session-b', 'session-a', 'session-b']);
+    ).toEqual(['session-b', 'session-a', 'session-b', 'session-a']);
+    expect(
+      sessionManagerMock.verifyNumber.mock.calls.map(([sessionId]) => sessionId),
+    ).toEqual([
+      'session-a',
+      'session-b',
+      'session-a',
+      'session-b',
+      'session-a',
+    ]);
   });
 });
