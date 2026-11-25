@@ -104,14 +104,14 @@ export class SessionManagerService implements OnModuleInit {
       const client = new Client({
         // LocalAuth aísla las credenciales en una carpeta distinta por clientId.
         // La carpeta resultante será .wwebjs_auth/session-{sessionId}
-        authStrategy,
-        webVersionCache: {
-          type: 'remote',
+        authStrategy: new LocalAuth({ clientId: sessionId }),
+         webVersionCache: {
+           type: 'remote',
           // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
           remotePath:
-            // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1055762171-alpha.html',
-              'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
-        },
+            'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1055549427-alpha.html',
+        //       // 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1048354754-alpha.html',
+         },
         puppeteer: {
           headless: true,
           // Flags necesarios en Linux/servidores sin entorno gráfico o como root
