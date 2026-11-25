@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  NotFoundException,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -10,8 +19,10 @@ import { BulkMessageLog } from './entities/bulk-message-log.entity.js';
 export class BulkController {
   constructor(
     @InjectQueue('bulk-send') private readonly bulkQueue: Queue,
-    @InjectRepository(BulkBatch) private readonly batchRepo: Repository<BulkBatch>,
-    @InjectRepository(BulkMessageLog) private readonly logRepo: Repository<BulkMessageLog>,
+    @InjectRepository(BulkBatch)
+    private readonly batchRepo: Repository<BulkBatch>,
+    @InjectRepository(BulkMessageLog)
+    private readonly logRepo: Repository<BulkMessageLog>,
   ) {}
 
   // ============================================================
@@ -79,10 +90,7 @@ export class BulkController {
   // Útil para que el frontend muestre el historial de envíos.
   // ============================================================
   @Get()
-  async findAll(
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
-  ) {
+  async findAll(@Query('page') page = '1', @Query('limit') limit = '20') {
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
@@ -203,5 +211,31 @@ export class BulkController {
         totalPages: Math.ceil(total / limitNum),
       },
     };
+  }
+
+  // DELETE /api/bulk/:batchId
+  // Elimina un lote y todos sus logs asociados (CASCADE en la BD).
+  @Delete(':batchId')
+  async remove(@Param('batchId') batchId: string) {
+    const batch = await this.batchRepo.findOneBy({ id: batchId });
+    if (!batch) throw new NotFoundException('Lote no encontrado');
+    // Al borrar el batch, los logs se borran en cascada por onDelete: 'CASCADE'
+    await this.batchRepo.remove(batch);
+    return { deleted: true, batchId };
+  }
+
+  // DELETE /api/bulk
+  // Elimina TODOS los lotes (y sus logs en cascada).
+  // Opcional: ?status=FAILED para borrar solo los fallidos.
+  @Delete()
+  async removeAll(@Query('status') status?: string) {
+    if (status) {
+      // Borrar solo los de un estado específico
+      const result = await this.batchRepo.delete({ status });
+      return { deleted: result.affected ?? 0, filter: { status } };
+    }
+    // Borrar todos
+    const result = await this.batchRepo.clear(); // clear() vacía la tabla
+    return { deleted: 'all', message: 'Todos los lotes eliminados' };
   }
 }

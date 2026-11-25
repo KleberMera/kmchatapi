@@ -59,7 +59,9 @@ export class BulkSenderService {
       verifyDelayMs,
     } = batch.config;
 
-    // Filtramos las sesiones activas en memoria
+    // Filtramos las sesiones activas en memoria.
+    // Usamos una copia mutable (activeSessions) para poder eliminar
+    // sesiones que se deslogueen durante el proceso.
     const activeSessions = sessionIds.filter((id) =>
       this.sessionManager['clients'].has(id),
     );
@@ -82,12 +84,44 @@ export class BulkSenderService {
       }
 
       let sent = false;
+      // Reiniciamos los intentos para cada destinatario.
+      // El máximo de intentos es el número de sesiones activas actuales
+      // (que puede haber disminuido si alguna se deslogueó).
       let attempts = 0;
 
+      // Si ya no quedan sesiones activas, abortamos el lote
+      if (activeSessions.length === 0) {
+        this.logger.error(
+          `Lote ${batchId} abortado: todas las sesiones se desconectaron`,
+        );
+        batch.status = 'FAILED';
+        batch.currentSessionId = '';
+        await this.batchRepo.save(batch);
+        return;
+      }
+
       while (!sent && attempts < activeSessions.length) {
+        // Protección por si el índice quedó fuera de rango tras eliminar sesiones
+        if (currentSessionIndex >= activeSessions.length) {
+          currentSessionIndex = 0;
+        }
+
         const sessionId = activeSessions[currentSessionIndex];
         batch.currentSessionId = sessionId;
         await this.batchRepo.save(batch);
+
+        // Comprobación previa: si la sesión ya no está activa (se deslogueó
+        // entre iteraciones), la eliminamos de la rotación y saltamos
+        // a la siguiente sin gastar un intento de envío.
+        if (!this.sessionManager['clients'].has(sessionId)) {
+          this.logger.warn(
+            `Sesión ${sessionId} ya no está activa, eliminándola de la rotación`,
+          );
+          activeSessions.splice(currentSessionIndex, 1);
+          if (activeSessions.length === 0) break; // salir del while
+          currentSessionIndex = currentSessionIndex % activeSessions.length;
+          continue;
+        }
 
         // 1. Verificar si el número tiene WhatsApp
         const numberId = await this.sessionManager.verifyNumber(
@@ -137,9 +171,30 @@ export class BulkSenderService {
             status: 'FAILED',
             errorMessage: error.message,
           });
-          attempts++;
-          currentSessionIndex =
-            (currentSessionIndex + 1) % activeSessions.length;
+
+          // Si la sesión ya no existe en memoria (se deslogueó),
+          // la eliminamos de la rotación para no volver a intentarla.
+          if (!this.sessionManager['clients'].has(sessionId)) {
+            this.logger.warn(
+              `Sesión ${sessionId} se desconectó durante el envío, eliminándola`,
+            );
+            activeSessions.splice(currentSessionIndex, 1);
+            if (activeSessions.length === 0) {
+              this.logger.error(
+                `Lote ${batchId} abortado: todas las sesiones se desconectaron`,
+              );
+              batch.status = 'FAILED';
+              batch.currentSessionId = '';
+              await this.batchRepo.save(batch);
+              return;
+            }
+            currentSessionIndex = currentSessionIndex % activeSessions.length;
+          } else {
+            // La sesión sigue activa, solo rotamos
+            attempts++;
+            currentSessionIndex =
+              (currentSessionIndex + 1) % activeSessions.length;
+          }
         }
 
         await new Promise((r) => setTimeout(r, verifyDelayMs));
@@ -152,6 +207,17 @@ export class BulkSenderService {
       batch.processed++;
       messagesInCurrentBatch++;
       await this.batchRepo.save(batch);
+
+      // Si todas las sesiones se cayeron, no tiene sentido seguir con pausas
+      if (activeSessions.length === 0) {
+        this.logger.error(
+          `Lote ${batchId} abortado: todas las sesiones se desconectaron`,
+        );
+        batch.status = 'FAILED';
+        batch.currentSessionId = '';
+        await this.batchRepo.save(batch);
+        return;
+      }
 
       // Aplicar pausas
       if (messagesInCurrentBatch >= batchSize) {
@@ -167,7 +233,6 @@ export class BulkSenderService {
     }
 
     batch.status = 'COMPLETED';
-    // batch.currentSessionId = null;
     batch.currentSessionId = '';
     await this.batchRepo.save(batch);
     this.logger.log(

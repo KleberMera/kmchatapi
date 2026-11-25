@@ -20,7 +20,7 @@ import { BulkMessageLog } from './modules/bulk/entities/bulk-message-log.entity.
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
       // Incluimos las 4 entidades para que TypeORM las registre
-      entities: [User, WhatsappSession, BulkBatch, BulkMessageLog],
+      autoLoadEntities: true, // ← carga automáticamente las entidades de cada forFeature
       synchronize: true,
       logging: false,
     }),
