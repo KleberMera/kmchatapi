@@ -27,6 +27,10 @@ export class BulkMessageLog {
   @Column({ nullable: true })
   sessionId: string;
 
+  // Número de WhatsApp asociado a la sesión que realizó el intento.
+  @Column({ nullable: true })
+  sessionPhoneNumber: string;
+
   // Estado: 'SENT', 'FAILED', 'INVALID'
   @Column()
   status: string;

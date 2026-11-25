@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import * as whatsappWeb from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import { WhatsappSession } from './entities/whatsapp-session.entity.js';
@@ -333,6 +333,24 @@ export class SessionManagerService implements OnModuleInit {
       status: session.status,
       hasQr: this.pendingQrs.has(sessionId),
     };
+  }
+
+  async getSessionPhoneNumbers(
+    sessionIds: string[],
+  ): Promise<Map<string, string | null>> {
+    const sessions = await this.sessionRepo.find({
+      where: { sessionId: In(sessionIds) },
+      select: { sessionId: true, phoneNumber: true },
+    });
+
+    return new Map(
+      sessions.map(
+        ({ sessionId, phoneNumber }): [string, string | null] => [
+          sessionId,
+          phoneNumber ?? null,
+        ],
+      ),
+    );
   }
 
   // Devuelve el QR pendiente de una sesión (o null si no hay).

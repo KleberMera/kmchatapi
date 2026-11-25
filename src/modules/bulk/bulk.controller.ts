@@ -178,37 +178,30 @@ export class BulkController {
   // GET /api/bulk/:batchId/logs
   // Devuelve el detalle de cada mensaje del lote.
   // Soporta filtro por status: ?status=SENT|FAILED|INVALID
-  // y paginación: ?page=1&limit=50
+  // Devuelve todos los logs, incluyendo el identificador y número de sesión.
   // ============================================================
   @Get(':batchId/logs')
   async getLogs(
     @Param('batchId') batchId: string,
     @Query('status') status?: string,
-    @Query('page') page = '1',
-    @Query('limit') limit = '50',
   ) {
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
-    const skip = (pageNum - 1) * limitNum;
-
     // Construimos el where dinámicamente según si viene status
     const where: any = { batchId };
     if (status) where.status = status;
 
-    const [items, total] = await this.logRepo.findAndCount({
+    const items = await this.logRepo.find({
       where,
       order: { sentAt: 'DESC' },
-      skip,
-      take: limitNum,
     });
+    const total = items.length;
 
     return {
       items,
       pagination: {
-        page: pageNum,
-        limit: limitNum,
+        page: 1,
+        limit: total,
         total,
-        totalPages: Math.ceil(total / limitNum),
+        totalPages: total === 0 ? 0 : 1,
       },
     };
   }

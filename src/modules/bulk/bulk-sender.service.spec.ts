@@ -39,6 +39,12 @@ describe('BulkSenderService', () => {
         ['session-a', {}],
         ['session-b', {}],
       ]),
+      getSessionPhoneNumbers: vi.fn().mockResolvedValue(
+        new Map([
+          ['session-a', '593991111111'],
+          ['session-b', '593992222222'],
+        ]),
+      ),
       verifyNumber: vi
         .fn(async (_sessionId: string, phone: string) => phone)
         .mockRejectedValueOnce(new Error('sendIq called before startComms')),
@@ -68,6 +74,44 @@ describe('BulkSenderService', () => {
       'session-a',
       'session-b',
       'session-a',
+    ]);
+    expect(logRepo.save.mock.calls.map(([log]) => log)).toEqual([
+      {
+        batchId: 'batch-1',
+        phoneNumber: '111',
+        sessionId: 'session-a',
+        sessionPhoneNumber: '593991111111',
+        status: 'FAILED',
+        errorMessage: 'Error de verificación: sendIq called before startComms',
+      },
+      {
+        batchId: 'batch-1',
+        phoneNumber: '111',
+        sessionId: 'session-b',
+        sessionPhoneNumber: '593992222222',
+        status: 'SENT',
+      },
+      {
+        batchId: 'batch-1',
+        phoneNumber: '222',
+        sessionId: 'session-a',
+        sessionPhoneNumber: '593991111111',
+        status: 'SENT',
+      },
+      {
+        batchId: 'batch-1',
+        phoneNumber: '333',
+        sessionId: 'session-b',
+        sessionPhoneNumber: '593992222222',
+        status: 'SENT',
+      },
+      {
+        batchId: 'batch-1',
+        phoneNumber: '444',
+        sessionId: 'session-a',
+        sessionPhoneNumber: '593991111111',
+        status: 'SENT',
+      },
     ]);
   });
 });
