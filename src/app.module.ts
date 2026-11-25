@@ -19,12 +19,12 @@ import { BulkMessageLog } from './modules/bulk/entities/bulk-message-log.entity.
       username: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
-      entities: [User, WhatsappSession],
+      // Incluimos las 4 entidades para que TypeORM las registre
+      entities: [User, WhatsappSession, BulkBatch, BulkMessageLog],
       synchronize: true,
       logging: false,
     }),
 
-    // Conexión a Redis para BullMQ
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST ?? 'localhost',
