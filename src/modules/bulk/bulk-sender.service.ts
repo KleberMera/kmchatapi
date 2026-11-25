@@ -84,6 +84,7 @@ export class BulkSenderService {
       }
 
       let sent = false;
+      let messageSent = false;
       // Reiniciamos los intentos para cada destinatario.
       // El máximo de intentos es el número de sesiones activas actuales
       // (que puede haber disminuido si alguna se deslogueó).
@@ -160,6 +161,7 @@ export class BulkSenderService {
           });
           batch.sent++;
           sent = true;
+          messageSent = true;
         } catch (error: any) {
           this.logger.warn(
             `Fallo con sesión ${sessionId} al enviar a ${phone}: ${error.message}. Rotando sesión...`,
@@ -206,6 +208,9 @@ export class BulkSenderService {
 
       batch.processed++;
       messagesInCurrentBatch++;
+      if (messageSent) {
+        currentSessionIndex = (currentSessionIndex + 1) % activeSessions.length;
+      }
       await this.batchRepo.save(batch);
 
       // Si todas las sesiones se cayeron, no tiene sentido seguir con pausas
@@ -226,7 +231,6 @@ export class BulkSenderService {
         );
         await new Promise((r) => setTimeout(r, longPauseMs));
         messagesInCurrentBatch = 0;
-        currentSessionIndex = (currentSessionIndex + 1) % activeSessions.length;
       } else {
         await new Promise((r) => setTimeout(r, delayBetweenMessagesMs));
       }
