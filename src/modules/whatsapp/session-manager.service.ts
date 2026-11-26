@@ -166,6 +166,7 @@ export class SessionManagerService implements OnModuleInit {
         },
         puppeteer: {
           headless: true,
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
           // Flags necesarios en Linux/servidores sin entorno gráfico o como root
           args: [
             '--no-sandbox',

@@ -63,6 +63,9 @@ Bulk message videos are stored on disk, not in PostgreSQL. Local development use
 `bulk-media` in the API working directory. On the Ubuntu server, `deploy.sh` creates
 `$HOME/masivawsp/bulk-media` and passes it to PM2 through `BULK_MEDIA_DIR`. Keep this
 directory on persistent storage and include it in server backups.
+On Ubuntu, video sending also requires Google Chrome with media codecs installed.
+`deploy.sh` configures `/usr/bin/google-chrome-stable` through
+`PUPPETEER_EXECUTABLE_PATH`; override the variable if Chrome is installed elsewhere.
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
 
