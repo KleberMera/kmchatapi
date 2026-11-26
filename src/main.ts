@@ -4,6 +4,7 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor.js';
 import { HttpExceptionFilter } from './common/interceptors/http-exception.filter.js';
+import { isTransientWhatsAppBrowserError } from './common/is-transient-whatsapp-error.js';
 
 const envPath = fileURLToPath(new URL('../.env', import.meta.url));
 if (existsSync(envPath)) {
@@ -16,15 +17,9 @@ const processLogger = new Logger('Process');
 process.on('unhandledRejection', (reason: unknown) => {
   const error =
     reason instanceof Error ? reason : new Error(String(reason));
-  const isTransientWhatsAppNavigationError =
-    error.message.includes(
-      'Execution context was destroyed, most likely because of a navigation',
-    ) && error.stack?.includes('whatsapp-web.js');
-
-  if (isTransientWhatsAppNavigationError) {
-    processLogger.error(
-      `Rechazo transitorio de Puppeteer durante navegación de WhatsApp: ${error.message}`,
-      error.stack,
+  if (isTransientWhatsAppBrowserError(error)) {
+    processLogger.warn(
+      `Fallo transitorio al inicializar WhatsApp Web: ${error.message}\n${error.stack ?? ''}`,
     );
     return;
   }

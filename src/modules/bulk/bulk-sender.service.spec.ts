@@ -181,6 +181,60 @@ describe('BulkSenderService', () => {
     );
   });
 
+  it('resumes a processing batch at the persisted recipient index', async () => {
+    const batch = {
+      id: 'batch-resume',
+      status: 'PROCESSING',
+      runToken: 'run-1',
+      config: {
+        sessionIds: ['session-a'],
+        recipients: [
+          { phone: '111' },
+          { phone: '222' },
+          { phone: '333' },
+        ],
+        message: 'Hello',
+        delayBetweenMessagesMs: 0,
+        batchSize: 50,
+        longPauseMs: 0,
+        verifyDelayMs: 0,
+        verifyNumbers: false,
+      },
+      sent: 1,
+      failed: 0,
+      invalid: 0,
+      processed: 1,
+      currentSessionId: '',
+    } as BulkBatch;
+    const batchRepo = {
+      findOneBy: vi.fn().mockResolvedValue(batch),
+      save: vi.fn().mockResolvedValue(batch),
+    };
+    const logRepo = { save: vi.fn().mockResolvedValue(undefined) };
+    const sessionManagerMock = {
+      clients: new Map([['session-a', {}]]),
+      getSessionDetails: vi.fn().mockResolvedValue(new Map()),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new BulkSenderService(
+      batchRepo as unknown as Repository<BulkBatch>,
+      logRepo as unknown as Repository<BulkMessageLog>,
+      sessionManagerMock as unknown as SessionManagerService,
+      { read: vi.fn() } as unknown as BulkMediaStorage,
+    );
+
+    await service.processBatch(batch.id, 'run-1');
+
+    expect(sessionManagerMock.sendMessage.mock.calls).toEqual([
+      ['session-a', '222', 'Hello'],
+      ['session-a', '333', 'Hello'],
+    ]);
+    expect(batch.processed).toBe(3);
+    expect(batch.sent).toBe(3);
+    expect(batch.status).toBe('COMPLETED');
+    expect(logRepo.save).toHaveBeenCalledTimes(2);
+  });
+
   it('finishes the current message and preserves PAUSED status', async () => {
     const batch = {
       id: 'batch-pause',

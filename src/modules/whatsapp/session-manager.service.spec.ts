@@ -9,6 +9,8 @@ describe('SessionManagerService', () => {
     );
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     service['clients'].set('session-1', { sendMessage } as never);
+    service['sessionNames'].set('session-1', 'Ventas');
+    const logSpy = vi.spyOn(service['logger'], 'log');
 
     await service.sendVideo('session-1', '593999000001', 'Caption', {
       data: 'Y2xpcA==',
@@ -25,6 +27,25 @@ describe('SessionManagerService', () => {
         filename: 'promo.mp4',
       }),
       { caption: 'Caption' },
+    );
+    expect(logSpy).toHaveBeenCalledWith(
+      'Video enviado desde Ventas [session-1] a 593999000001@c.us',
+    );
+  });
+
+  it('includes the session name when logging sent messages', async () => {
+    const service = new SessionManagerService(
+      {} as Repository<WhatsappSession>,
+    );
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    service['clients'].set('session-1', { sendMessage } as never);
+    service['sessionNames'].set('session-1', 'Ventas');
+    const logSpy = vi.spyOn(service['logger'], 'log');
+
+    await service.sendMessage('session-1', '593999000001', 'Hola');
+
+    expect(logSpy).toHaveBeenCalledWith(
+      'Mensaje enviado desde Ventas [session-1] a 593999000001@c.us',
     );
   });
 

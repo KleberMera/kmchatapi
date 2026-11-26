@@ -87,14 +87,16 @@ export class BulkSenderService {
     const batch = await this.batchRepo.findOneBy({ id: batchId });
     if (
       !batch ||
-      batch.status !== 'PENDING' ||
+      (batch.status !== 'PENDING' && batch.status !== 'PROCESSING') ||
       (batch.runToken ?? null) !== (runToken ?? null)
     ) {
       return;
     }
 
-    batch.status = 'PROCESSING';
-    await this.batchRepo.save(batch);
+    if (batch.status === 'PENDING') {
+      batch.status = 'PROCESSING';
+      await this.batchRepo.save(batch);
+    }
 
     const {
       sessionIds,
@@ -131,9 +133,20 @@ export class BulkSenderService {
           }
         : null;
 
-    const activeSessions = sessionIds.filter((id) =>
+    let activeSessions = sessionIds.filter((id) =>
       this.sessionManager['clients'].has(id),
     );
+    for (
+      let waitMs = 0;
+      activeSessions.length === 0 && waitMs < 60_000;
+      waitMs += 1000
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (!(await this.isRunning(batchId, runToken))) return;
+      activeSessions = sessionIds.filter((id) =>
+        this.sessionManager['clients'].has(id),
+      );
+    }
     if (activeSessions.length === 0) {
       batch.status = 'FAILED';
       await this.batchRepo.save(batch);
@@ -143,9 +156,10 @@ export class BulkSenderService {
     const sessionDetails =
       await this.sessionManager.getSessionDetails(activeSessions);
     let currentSessionIndex = 0;
-    let messagesInCurrentBatch = 0;
+    let messagesInCurrentBatch = batch.processed % batchSize;
 
-    for (const recipient of recipients) {
+    for (const [recipientIndex, recipient] of recipients.entries()) {
+      if (recipientIndex < batch.processed) continue;
       if (!(await this.isRunning(batchId, runToken))) return;
 
       const phone = recipient.phone.replace(/\D/g, '');
@@ -169,6 +183,10 @@ export class BulkSenderService {
         if (currentSessionIndex >= activeSessions.length) currentSessionIndex = 0;
 
         const sessionId = activeSessions[currentSessionIndex];
+        const sessionName = sessionDetails.get(sessionId)?.name;
+        const sessionLabel = sessionName
+          ? `${sessionName} [${sessionId}]`
+          : sessionId;
         batch.currentSessionId = sessionId;
 
         if (!this.sessionManager['clients'].has(sessionId)) {
@@ -190,7 +208,7 @@ export class BulkSenderService {
               error instanceof Error ? error.message : String(error);
             if (!(await this.hasCurrentRun(batchId, runToken))) return;
             this.logger.error(
-              `Error verificando ${phone} con ${sessionId}: ${errorMessage}`,
+              `Error verificando ${phone} con ${sessionLabel}: ${errorMessage}`,
             );
             await this.logRepo.save({
               batchId,
@@ -295,7 +313,7 @@ export class BulkSenderService {
             error instanceof Error ? (error.stack ?? error.message) : errorMessage;
           if (!(await this.hasCurrentRun(batchId, runToken))) return;
           this.logger.error(
-            `Error enviando a ${phone} con ${sessionId}${video ? ` (video ${video.filename}, ${video.mimetype}, ${video.filesize} bytes)` : ''}: ${errorMessage}`,
+            `Error enviando a ${phone} con ${sessionLabel}${video ? ` (video ${video.filename}, ${video.mimetype}, ${video.filesize} bytes)` : ''}: ${errorMessage}`,
             error instanceof Error ? error.stack : undefined,
           );
           await this.logRepo.save({

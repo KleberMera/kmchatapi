@@ -47,6 +47,8 @@ export class SessionManagerService implements OnModuleInit {
 
   private deletedSessions = new Set<string>();
 
+  private sessionNames = new Map<string, string>();
+
   // Mapa para guardar los QRs pendientes mientras el cliente no está listo
   private pendingQrs = new Map<string, string>();
 
@@ -65,6 +67,7 @@ export class SessionManagerService implements OnModuleInit {
     });
 
     for (const session of activeSessions) {
+      if (session.name) this.sessionNames.set(session.sessionId, session.name);
       this.logger.log(`Restaurando sesión: ${session.sessionId}`);
       this.initializeClient(session.sessionId, session.userId).catch((err) =>
         this.logger.error(
@@ -94,6 +97,7 @@ export class SessionManagerService implements OnModuleInit {
       status: SESSION_STATUS.PENDING,
     });
     await this.sessionRepo.save(session);
+    this.sessionNames.set(sessionId, sessionName);
 
     // Arrancamos el cliente de WhatsApp en segundo plano.
     // Si falla, el estado en BD se actualizará a Failed por el evento auth_failure.
@@ -286,6 +290,9 @@ export class SessionManagerService implements OnModuleInit {
             { status: SESSION_STATUS.DISCONNECTED },
           );
           this.logger.warn(`Sesión ${sessionId} desconectada: ${reason}`);
+          if (this.managedClients.get(sessionId)?.client === client) {
+            this.managedClients.delete(sessionId);
+          }
 
           // Solo rechazamos si aún no se había resuelto (estaba inicializando)
           if (!settled) {
@@ -316,6 +323,22 @@ export class SessionManagerService implements OnModuleInit {
           settled = true;
           reject(err);
         }
+        void Promise.resolve()
+          .then(() => client.destroy())
+          .catch((cleanupError: unknown) => {
+            const message =
+              cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError);
+            this.logger.warn(
+              `No se pudo cerrar el navegador de ${sessionId}: ${message}`,
+            );
+          })
+          .finally(() => {
+            if (this.managedClients.get(sessionId) === managedClient) {
+              this.managedClients.delete(sessionId);
+            }
+          });
       });
     });
   }
@@ -383,7 +406,9 @@ export class SessionManagerService implements OnModuleInit {
     const chatId = `${digits}@c.us`;
 
     await client.sendMessage(chatId, message);
-    this.logger.log(`Mensaje enviado desde ${sessionId} a ${chatId}`);
+    this.logger.log(
+      `Mensaje enviado desde ${this.getSessionLabel(sessionId)} a ${chatId}`,
+    );
   }
 
   async sendVideo(
@@ -413,7 +438,14 @@ export class SessionManagerService implements OnModuleInit {
     const chatId = `${digits}@c.us`;
 
     await client.sendMessage(chatId, media, { caption: message });
-    this.logger.log(`Video enviado desde ${sessionId} a ${chatId}`);
+    this.logger.log(
+      `Video enviado desde ${this.getSessionLabel(sessionId)} a ${chatId}`,
+    );
+  }
+
+  private getSessionLabel(sessionId: string): string {
+    const name = this.sessionNames.get(sessionId);
+    return name ? `${name} [${sessionId}]` : sessionId;
   }
 
   // Elimina una sesión: cierra el cliente, borra la carpeta de auth y el registro en BD.
@@ -421,6 +453,7 @@ export class SessionManagerService implements OnModuleInit {
     this.deletedSessions.add(sessionId);
     this.clients.delete(sessionId);
     this.pendingQrs.delete(sessionId);
+    this.sessionNames.delete(sessionId);
 
     const managedClient = this.managedClients.get(sessionId);
     if (managedClient) {
@@ -458,6 +491,10 @@ export class SessionManagerService implements OnModuleInit {
       order: { id: 'DESC' },
     });
 
+    for (const session of sessions) {
+      if (session.name) this.sessionNames.set(session.sessionId, session.name);
+    }
+
     // Añadimos un campo calculado 'isActive' que indica si el cliente
     // está corriendo en memoria en este momento.
     return sessions.map((s) => ({
@@ -476,6 +513,7 @@ export class SessionManagerService implements OnModuleInit {
     if (!session) {
       throw new NotFoundException(`Sesión ${sessionId} no encontrada`);
     }
+    if (session.name) this.sessionNames.set(sessionId, session.name);
     this.deletedSessions.delete(sessionId);
     // Volvemos a poner el estado en Pending y arrancamos el cliente
     await this.sessionRepo.update(
