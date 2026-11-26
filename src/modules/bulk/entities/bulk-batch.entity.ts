@@ -42,6 +42,9 @@ export class BulkBatch {
   @Column({ type: 'varchar', nullable: true })
   videoFileName: string | null;
 
+  @Column({ type: 'uuid', nullable: true })
+  userId: string | null;
+
   // Contadores para el frontend
   @Column({ default: 0 }) total: number;
   @Column({ default: 0 }) processed: number;

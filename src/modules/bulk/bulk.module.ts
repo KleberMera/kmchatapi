@@ -8,10 +8,11 @@ import { BulkProcessor } from './bulk.processor.js';
 import { BulkController } from './bulk.controller.js';
 import { WhatsappModule } from '../whatsapp/whatsapp.module.js';
 import { BulkMediaStorage } from './bulk-media.storage.js';
+import { WhatsappSession } from '../whatsapp/entities/whatsapp-session.entity.js';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([BulkBatch, BulkMessageLog]),
+    TypeOrmModule.forFeature([BulkBatch, BulkMessageLog, WhatsappSession]),
     BullModule.registerQueue({ name: 'bulk-send' }),
     WhatsappModule,
   ],

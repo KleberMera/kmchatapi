@@ -17,11 +17,12 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 import { BulkBatch } from './entities/bulk-batch.entity.js';
 import { BulkMessageLog } from './entities/bulk-message-log.entity.js';
 import { BulkMediaStorage } from './bulk-media.storage.js';
+import { WhatsappSession } from '../whatsapp/entities/whatsapp-session.entity.js';
 
 type BulkStartRequest = BulkBatch['config'];
 type UploadedVideo = {
@@ -29,8 +30,6 @@ type UploadedVideo = {
   originalname: string;
   mimetype: string;
 };
-
-const MAX_VIDEO_SIZE = 16 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -98,6 +97,8 @@ export class BulkController {
     @InjectRepository(BulkMessageLog)
     private readonly logRepo: Repository<BulkMessageLog>,
     private readonly mediaStorage: BulkMediaStorage,
+    @InjectRepository(WhatsappSession)
+    private readonly sessionRepo: Repository<WhatsappSession>,
   ) {}
 
   // ============================================================
@@ -115,15 +116,16 @@ export class BulkController {
   //   longPauseMs: number,                     // Duración pausa larga (ms)
   //   verifyDelayMs: number                    // Pausa entre verificaciones (ms)
   //   verifyNumbers?: boolean                  // Verificar antes de enviar (por defecto true)
-  //   video?: archivo de video opcional        // Máximo 16 MB, se envía como caption
+  //   video?: archivo de video opcional        // Se envía como caption
   // }
+  // El usuario propietario se envía en el query parameter userId.
   // ============================================================
   @Post('start')
   @UseInterceptors(
     FileInterceptor('video', {
       limits: {
-        fileSize: MAX_VIDEO_SIZE,
-        fieldSize: 16 * 1024 * 1024,
+        fileSize: Infinity,
+        fieldSize: Infinity,
         files: 1,
       },
       fileFilter: (_request, file, callback) => {
@@ -137,14 +139,25 @@ export class BulkController {
   )
   async start(
     @Body() body: unknown,
+    @Query('userId') userId?: string,
     @UploadedFile() video?: UploadedVideo,
   ) {
+    this.requireUserId(userId);
     const config = parseStartRequest(body);
+    const userSessions = await this.sessionRepo.find({
+      where: { userId, sessionId: In(config.sessionIds) },
+      select: { sessionId: true },
+    });
+    const userSessionIds = new Set(
+      userSessions.map((session) => session.sessionId),
+    );
+    if (config.sessionIds.some((sessionId) => !userSessionIds.has(sessionId))) {
+      throw new BadRequestException(
+        'Las sesiones seleccionadas no pertenecen al usuario',
+      );
+    }
     if (video && video.buffer.length === 0) {
       throw new BadRequestException('El video adjunto está vacío');
-    }
-    if (video && video.buffer.length > MAX_VIDEO_SIZE) {
-      throw new BadRequestException('El video no puede superar los 16 MB');
     }
     const runToken = randomUUID();
     const videoKey = video ? await this.mediaStorage.save(video.buffer) : null;
@@ -157,6 +170,7 @@ export class BulkController {
       videoMimeType: video?.mimetype ?? null,
       videoFileName:
         video?.originalname.split(/[\\/]/).pop()?.slice(0, 255) ?? null,
+      userId,
       total: config.recipients.length,
       status: 'PENDING',
     });
@@ -202,8 +216,12 @@ export class BulkController {
   }
 
   @Post(':batchId/pause')
-  async pause(@Param('batchId') batchId: string) {
-    const batch = await this.batchRepo.findOneBy({ id: batchId });
+  async pause(
+    @Param('batchId') batchId: string,
+    @Query('userId') userId?: string,
+  ) {
+    this.requireUserId(userId);
+    const batch = await this.batchRepo.findOneBy({ id: batchId, userId });
     if (!batch) throw new NotFoundException('Lote no encontrado');
     if (batch.status === 'PAUSED') return { batchId, status: batch.status };
     if (batch.status !== 'PENDING' && batch.status !== 'PROCESSING') {
@@ -216,8 +234,12 @@ export class BulkController {
   }
 
   @Post(':batchId/restart')
-  async restart(@Param('batchId') batchId: string) {
-    const batch = await this.batchRepo.findOneBy({ id: batchId });
+  async restart(
+    @Param('batchId') batchId: string,
+    @Query('userId') userId?: string,
+  ) {
+    this.requireUserId(userId);
+    const batch = await this.batchRepo.findOneBy({ id: batchId, userId });
     if (!batch) throw new NotFoundException('Lote no encontrado');
 
     const runToken = randomUUID();
@@ -236,18 +258,24 @@ export class BulkController {
 
   // ============================================================
   // GET /api/bulk
-  // Lista todos los lotes ordenados por fecha de creación descendente.
+  // Lista los lotes del usuario ordenados por fecha de creación descendente.
   // Soporta paginación con ?page=1&limit=20
   // Útil para que el frontend muestre el historial de envíos.
   // ============================================================
   @Get()
-  async findAll(@Query('page') page = '1', @Query('limit') limit = '20') {
+  async findAll(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('userId') userId?: string,
+  ) {
+    this.requireUserId(userId);
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
     // findAndCount devuelve [items, total] en una sola consulta
     const [items, total] = await this.batchRepo.findAndCount({
+      where: { userId },
       order: { createdAt: 'DESC' },
       skip,
       take: limitNum,
@@ -286,8 +314,12 @@ export class BulkController {
   // Es ligero: no incluye config ni logs.
   // ============================================================
   @Get('status/:batchId')
-  async getStatus(@Param('batchId') batchId: string) {
-    const batch = await this.batchRepo.findOneBy({ id: batchId });
+  async getStatus(
+    @Param('batchId') batchId: string,
+    @Query('userId') userId?: string,
+  ) {
+    this.requireUserId(userId);
+    const batch = await this.batchRepo.findOneBy({ id: batchId, userId });
     if (!batch) throw new NotFoundException('Lote no encontrado');
 
     const progress =
@@ -314,8 +346,12 @@ export class BulkController {
   // Útil para una pantalla de "detalle del lote".
   // ============================================================
   @Get(':batchId')
-  async findOne(@Param('batchId') batchId: string) {
-    const batch = await this.batchRepo.findOneBy({ id: batchId });
+  async findOne(
+    @Param('batchId') batchId: string,
+    @Query('userId') userId?: string,
+  ) {
+    this.requireUserId(userId);
+    const batch = await this.batchRepo.findOneBy({ id: batchId, userId });
     if (!batch) throw new NotFoundException('Lote no encontrado');
 
     const { runToken: _runToken, videoKey: _videoKey, ...details } = batch;
@@ -337,7 +373,12 @@ export class BulkController {
   async getLogs(
     @Param('batchId') batchId: string,
     @Query('status') status?: string,
+    @Query('userId') userId?: string,
   ) {
+    this.requireUserId(userId);
+    const batch = await this.batchRepo.findOneBy({ id: batchId, userId });
+    if (!batch) throw new NotFoundException('Lote no encontrado');
+
     // Construimos el where dinámicamente según si viene status
     const where: any = { batchId };
     if (status) where.status = status;
@@ -362,8 +403,12 @@ export class BulkController {
   // DELETE /api/bulk/:batchId
   // Elimina un lote y todos sus logs asociados (CASCADE en la BD).
   @Delete(':batchId')
-  async remove(@Param('batchId') batchId: string) {
-    const batch = await this.batchRepo.findOneBy({ id: batchId });
+  async remove(
+    @Param('batchId') batchId: string,
+    @Query('userId') userId?: string,
+  ) {
+    this.requireUserId(userId);
+    const batch = await this.batchRepo.findOneBy({ id: batchId, userId });
     if (!batch) throw new NotFoundException('Lote no encontrado');
     // Al borrar el batch, los logs se borran en cascada por onDelete: 'CASCADE'
     await this.batchRepo.remove(batch);
@@ -372,24 +417,27 @@ export class BulkController {
   }
 
   // DELETE /api/bulk
-  // Elimina TODOS los lotes (y sus logs en cascada).
+  // Elimina todos los lotes del usuario (y sus logs en cascada).
   // Opcional: ?status=FAILED para borrar solo los fallidos.
   @Delete()
-  async removeAll(@Query('status') status?: string) {
+  async removeAll(
+    @Query('status') status?: string,
+    @Query('userId') userId?: string,
+  ) {
+    this.requireUserId(userId);
     const batches = await this.batchRepo.find({
-      ...(status ? { where: { status } } : {}),
+      where: { userId, ...(status ? { status } : {}) },
       select: { id: true, videoKey: true },
     });
 
     let deleted: number | string;
     if (status) {
       // Borrar solo los de un estado específico
-      const result = await this.batchRepo.delete({ status });
+      const result = await this.batchRepo.delete({ userId, status });
       deleted = result.affected ?? 0;
     } else {
-      // clear() vacía la tabla
-      await this.batchRepo.clear();
-      deleted = 'all';
+      const result = await this.batchRepo.delete({ userId });
+      deleted = result.affected ?? 0;
     }
 
     for (const batch of batches) {
@@ -399,7 +447,16 @@ export class BulkController {
       deleted,
       ...(status
         ? { filter: { status } }
-        : { message: 'Todos los lotes eliminados' }),
+        : { message: 'Todos tus lotes fueron eliminados' }),
     };
+  }
+
+  private requireUserId(userId: string | undefined): asserts userId is string {
+    if (
+      !userId ||
+      !/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(userId)
+    ) {
+      throw new BadRequestException('El usuario es obligatorio');
+    }
   }
 }
