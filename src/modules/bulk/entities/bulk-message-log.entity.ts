@@ -40,8 +40,8 @@ export class BulkMessageLog {
   status: string;
 
   // Si falló, el motivo
-  @Column({ nullable: true })
-  errorMessage: string;
+  @Column({ type: 'text', nullable: true })
+  errorMessage: string | null;
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   sentAt: Date;

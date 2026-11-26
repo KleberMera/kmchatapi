@@ -7,6 +7,7 @@ import { BulkSenderService } from './bulk-sender.service.js';
 import { BulkProcessor } from './bulk.processor.js';
 import { BulkController } from './bulk.controller.js';
 import { WhatsappModule } from '../whatsapp/whatsapp.module.js';
+import { BulkMediaStorage } from './bulk-media.storage.js';
 
 @Module({
   imports: [
@@ -15,6 +16,6 @@ import { WhatsappModule } from '../whatsapp/whatsapp.module.js';
     WhatsappModule,
   ],
   controllers: [BulkController],
-  providers: [BulkSenderService, BulkProcessor],
+  providers: [BulkSenderService, BulkProcessor, BulkMediaStorage],
 })
 export class BulkModule {}

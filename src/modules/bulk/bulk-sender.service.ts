@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SessionManagerService } from '../whatsapp/session-manager.service.js';
+import { BulkMediaStorage } from './bulk-media.storage.js';
 import { BulkBatch } from './entities/bulk-batch.entity.js';
 import { BulkMessageLog } from './entities/bulk-message-log.entity.js';
 
@@ -14,37 +15,83 @@ export class BulkSenderService {
     @InjectRepository(BulkMessageLog)
     private logRepo: Repository<BulkMessageLog>,
     private sessionManager: SessionManagerService,
+    private mediaStorage: BulkMediaStorage,
   ) {}
 
-  // Reemplaza los placeholders {campo} del mensaje con los valores
-  // del destinatario. Si un placeholder no existe en el objeto,
-  // se deja tal cual (o se puede reemplazar por string vacío).
   private personalizeMessage(
     template: string,
     recipient: Record<string, string>,
   ): string {
     let result = template;
-
-    // Recorremos todos los campos del destinatario (excepto phone)
     for (const [key, value] of Object.entries(recipient)) {
       if (key === 'phone' || !value) continue;
-
-      // Reemplaza todas las ocurrencias de {key} con el valor.
-      // Usamos una regex global para reemplazar todas las apariciones.
       result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value));
     }
-
-    // Opcional: limpiar placeholders que no se reemplazaron.
-    // Si prefieres dejarlos visibles, comenta esta línea.
-    // result = result.replace(/\{[^}]+\}/g, '');
-
     return result;
   }
 
-  // Método principal que ejecuta el Worker de BullMQ.
-  async processBatch(batchId: string): Promise<void> {
+  private async isRunning(batchId: string, runToken: string | undefined) {
     const batch = await this.batchRepo.findOneBy({ id: batchId });
-    if (!batch || batch.status !== 'PENDING') return;
+    return (
+      batch?.status === 'PROCESSING' &&
+      (batch.runToken ?? null) === (runToken ?? null)
+    );
+  }
+
+  private async hasCurrentRun(
+    batchId: string,
+    runToken: string | undefined,
+  ): Promise<boolean> {
+    const batch = await this.batchRepo.findOneBy({ id: batchId });
+    return Boolean(
+      batch && (batch.runToken ?? null) === (runToken ?? null),
+    );
+  }
+
+  private async waitWhileRunning(
+    batchId: string,
+    runToken: string | undefined,
+    delayMs: number,
+  ): Promise<boolean> {
+    let remaining = delayMs;
+    while (remaining > 0) {
+      const interval = Math.min(remaining, 1000);
+      await new Promise((resolve) => setTimeout(resolve, interval));
+      remaining -= interval;
+      if (!(await this.isRunning(batchId, runToken))) return false;
+    }
+    return this.isRunning(batchId, runToken);
+  }
+
+  private async saveProgress(
+    batch: BulkBatch,
+    runToken: string | undefined,
+  ): Promise<boolean> {
+    const current = await this.batchRepo.findOneBy({ id: batch.id });
+    if (!current || (current.runToken ?? null) !== (runToken ?? null))
+      return false;
+
+    current.processed = batch.processed;
+    current.sent = batch.sent;
+    current.failed = batch.failed;
+    current.invalid = batch.invalid;
+    current.currentSessionId = batch.currentSessionId;
+    await this.batchRepo.save(current);
+    return current.status === 'PROCESSING';
+  }
+
+  async processBatch(
+    batchId: string,
+    runToken?: string,
+  ): Promise<void> {
+    const batch = await this.batchRepo.findOneBy({ id: batchId });
+    if (
+      !batch ||
+      batch.status !== 'PENDING' ||
+      (batch.runToken ?? null) !== (runToken ?? null)
+    ) {
+      return;
+    }
 
     batch.status = 'PROCESSING';
     await this.batchRepo.save(batch);
@@ -57,11 +104,33 @@ export class BulkSenderService {
       batchSize,
       longPauseMs,
       verifyDelayMs,
+      verifyNumbers = true,
     } = batch.config;
 
-    // Filtramos las sesiones activas en memoria.
-    // Usamos una copia mutable (activeSessions) para poder eliminar
-    // sesiones que se deslogueen durante el proceso.
+    let videoData: Buffer | null = null;
+    if (batch.videoKey) {
+      try {
+        videoData = await this.mediaStorage.read(batch.videoKey);
+      } catch (error: unknown) {
+        batch.status = 'FAILED';
+        await this.batchRepo.save(batch);
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `No se pudo leer el video del lote ${batchId}: ${message}`,
+        );
+        throw error;
+      }
+    }
+    const video =
+      videoData && batch.videoMimeType && batch.videoFileName
+        ? {
+            data: videoData.toString('base64'),
+            mimetype: batch.videoMimeType,
+            filename: batch.videoFileName,
+            filesize: videoData.length,
+          }
+        : null;
+
     const activeSessions = sessionIds.filter((id) =>
       this.sessionManager['clients'].has(id),
     );
@@ -70,124 +139,142 @@ export class BulkSenderService {
       await this.batchRepo.save(batch);
       throw new Error('No hay sesiones activas para procesar el lote');
     }
+
     const sessionDetails =
       await this.sessionManager.getSessionDetails(activeSessions);
-
     let currentSessionIndex = 0;
     let messagesInCurrentBatch = 0;
 
     for (const recipient of recipients) {
+      if (!(await this.isRunning(batchId, runToken))) return;
+
       const phone = recipient.phone.replace(/\D/g, '');
       if (!phone) {
         batch.invalid++;
         batch.processed++;
-        await this.batchRepo.save(batch);
+        if (!(await this.saveProgress(batch, runToken))) return;
         continue;
       }
 
       let sent = false;
       let messageSent = false;
-      // Reiniciamos los intentos para cada destinatario.
-      // El máximo de intentos es el número de sesiones activas actuales
-      // (que puede haber disminuido si alguna se deslogueó).
+      let attemptLogged = false;
       let attempts = 0;
 
-      // Si ya no quedan sesiones activas, abortamos el lote
-      if (activeSessions.length === 0) {
-        this.logger.error(
-          `Lote ${batchId} abortado: todas las sesiones se desconectaron`,
-        );
-        batch.status = 'FAILED';
-        batch.currentSessionId = '';
-        await this.batchRepo.save(batch);
-        return;
-      }
-
       while (!sent && attempts < activeSessions.length) {
-        // Protección por si el índice quedó fuera de rango tras eliminar sesiones
-        if (currentSessionIndex >= activeSessions.length) {
-          currentSessionIndex = 0;
+        if (!(await this.isRunning(batchId, runToken))) {
+          if (!attemptLogged) return;
+          break;
         }
+        if (currentSessionIndex >= activeSessions.length) currentSessionIndex = 0;
 
         const sessionId = activeSessions[currentSessionIndex];
         batch.currentSessionId = sessionId;
-        await this.batchRepo.save(batch);
 
-        // Comprobación previa: si la sesión ya no está activa (se deslogueó
-        // entre iteraciones), la eliminamos de la rotación y saltamos
-        // a la siguiente sin gastar un intento de envío.
         if (!this.sessionManager['clients'].has(sessionId)) {
           this.logger.warn(
             `Sesión ${sessionId} ya no está activa, eliminándola de la rotación`,
           );
           activeSessions.splice(currentSessionIndex, 1);
-          if (activeSessions.length === 0) break; // salir del while
-          currentSessionIndex = currentSessionIndex % activeSessions.length;
+          if (activeSessions.length === 0) break;
+          currentSessionIndex %= activeSessions.length;
           continue;
         }
 
-        // 1. Verificar si el número tiene WhatsApp
-        let numberId: string | null;
-        try {
-          numberId = await this.sessionManager.verifyNumber(sessionId, phone);
-        } catch (error: unknown) {
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-          this.logger.warn(
-            `No se pudo verificar ${phone} con ${sessionId}: ${errorMessage}. Probando otra sesión...`,
-          );
-          await this.logRepo.save({
-            batchId,
-            phoneNumber: phone,
-            sessionId,
-            sessionPhoneNumber:
-              sessionDetails.get(sessionId)?.phoneNumber ?? null,
-            sessionName: sessionDetails.get(sessionId)?.name ?? null,
-            status: 'FAILED',
-            errorMessage: `Error de verificación: ${errorMessage}`,
-          });
+        if (verifyNumbers) {
+          let numberId: string | null;
+          try {
+            numberId = await this.sessionManager.verifyNumber(sessionId, phone);
+          } catch (error: unknown) {
+            const errorMessage =
+              error instanceof Error ? error.message : String(error);
+            if (!(await this.hasCurrentRun(batchId, runToken))) return;
+            this.logger.error(
+              `Error verificando ${phone} con ${sessionId}: ${errorMessage}`,
+            );
+            await this.logRepo.save({
+              batchId,
+              phoneNumber: phone,
+              sessionId,
+              sessionPhoneNumber:
+                sessionDetails.get(sessionId)?.phoneNumber ?? null,
+              sessionName: sessionDetails.get(sessionId)?.name ?? null,
+              status: 'FAILED',
+              errorMessage: `Error de verificación: ${errorMessage}`,
+            });
+            attemptLogged = true;
 
-          if (!this.sessionManager['clients'].has(sessionId)) {
-            activeSessions.splice(currentSessionIndex, 1);
-            if (activeSessions.length === 0) break;
-            currentSessionIndex = currentSessionIndex % activeSessions.length;
-          } else {
-            attempts++;
+            if (!this.sessionManager['clients'].has(sessionId)) {
+              activeSessions.splice(currentSessionIndex, 1);
+              if (activeSessions.length === 0) break;
+              currentSessionIndex %= activeSessions.length;
+            } else {
+              attempts++;
+              currentSessionIndex =
+                (currentSessionIndex + 1) % activeSessions.length;
+            }
+
+            if (
+              !(await this.waitWhileRunning(
+                batchId,
+                runToken,
+                verifyDelayMs,
+              ))
+            ) {
+              break;
+            }
+            continue;
+          }
+
+          if (!numberId) {
+            if (!(await this.hasCurrentRun(batchId, runToken))) return;
+            await this.logRepo.save({
+              batchId,
+              phoneNumber: phone,
+              sessionId,
+              sessionPhoneNumber:
+                sessionDetails.get(sessionId)?.phoneNumber ?? null,
+              sessionName: sessionDetails.get(sessionId)?.name ?? null,
+              status: 'INVALID',
+              errorMessage: 'Número no registrado en WhatsApp',
+            });
+            attemptLogged = true;
+            batch.invalid++;
+            sent = true;
             currentSessionIndex =
               (currentSessionIndex + 1) % activeSessions.length;
+            break;
           }
-          await new Promise((r) => setTimeout(r, verifyDelayMs));
-          continue;
+
+          if (!(await this.isRunning(batchId, runToken))) {
+            if (!attemptLogged) return;
+            break;
+          }
+          if (
+            !(await this.waitWhileRunning(batchId, runToken, verifyDelayMs))
+          ) {
+            if (!attemptLogged) return;
+            break;
+          }
         }
 
-        if (!numberId) {
-          await this.logRepo.save({
-            batchId,
-            phoneNumber: phone,
-            sessionId,
-            sessionPhoneNumber:
-              sessionDetails.get(sessionId)?.phoneNumber ?? null,
-            sessionName: sessionDetails.get(sessionId)?.name ?? null,
-            status: 'INVALID',
-            errorMessage: 'Número no registrado en WhatsApp',
-          });
-          batch.invalid++;
-          sent = true;
-          currentSessionIndex =
-            (currentSessionIndex + 1) % activeSessions.length;
-          break;
-        }
-
-        // 2. Personalizar el mensaje con los datos de esta fila
         const personalizedMessage = this.personalizeMessage(message, recipient);
-
-        // 3. Intentar enviar
         try {
-          await this.sessionManager.sendMessage(
-            sessionId,
-            phone,
-            personalizedMessage,
-          );
+          if (video) {
+            await this.sessionManager.sendVideo(
+              sessionId,
+              phone,
+              personalizedMessage,
+              video,
+            );
+          } else {
+            await this.sessionManager.sendMessage(
+              sessionId,
+              phone,
+              personalizedMessage,
+            );
+          }
+          if (!(await this.hasCurrentRun(batchId, runToken))) return;
           await this.logRepo.save({
             batchId,
             phoneNumber: phone,
@@ -197,12 +284,16 @@ export class BulkSenderService {
             sessionName: sessionDetails.get(sessionId)?.name ?? null,
             status: 'SENT',
           });
+          attemptLogged = true;
           batch.sent++;
           sent = true;
           messageSent = true;
-        } catch (error: any) {
-          this.logger.warn(
-            `Fallo con sesión ${sessionId} al enviar a ${phone}: ${error.message}. Rotando sesión...`,
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          if (!(await this.hasCurrentRun(batchId, runToken))) return;
+          this.logger.error(
+            `Error enviando a ${phone} con ${sessionId}: ${errorMessage}`,
           );
           await this.logRepo.save({
             batchId,
@@ -212,76 +303,67 @@ export class BulkSenderService {
               sessionDetails.get(sessionId)?.phoneNumber ?? null,
             sessionName: sessionDetails.get(sessionId)?.name ?? null,
             status: 'FAILED',
-            errorMessage: error.message,
+            errorMessage,
           });
+          attemptLogged = true;
 
-          // Si la sesión ya no existe en memoria (se deslogueó),
-          // la eliminamos de la rotación para no volver a intentarla.
           if (!this.sessionManager['clients'].has(sessionId)) {
-            this.logger.warn(
-              `Sesión ${sessionId} se desconectó durante el envío, eliminándola`,
-            );
             activeSessions.splice(currentSessionIndex, 1);
-            if (activeSessions.length === 0) {
-              this.logger.error(
-                `Lote ${batchId} abortado: todas las sesiones se desconectaron`,
-              );
-              batch.status = 'FAILED';
-              batch.currentSessionId = '';
-              await this.batchRepo.save(batch);
-              return;
-            }
-            currentSessionIndex = currentSessionIndex % activeSessions.length;
+            if (activeSessions.length === 0) break;
+            currentSessionIndex %= activeSessions.length;
           } else {
-            // La sesión sigue activa, solo rotamos
             attempts++;
             currentSessionIndex =
               (currentSessionIndex + 1) % activeSessions.length;
           }
         }
 
-        await new Promise((r) => setTimeout(r, verifyDelayMs));
       }
 
-      if (!sent) {
-        batch.failed++;
-      }
-
+      if (!sent) batch.failed++;
       batch.processed++;
       messagesInCurrentBatch++;
-      if (messageSent) {
+      if (messageSent && activeSessions.length > 0) {
         currentSessionIndex = (currentSessionIndex + 1) % activeSessions.length;
       }
-      await this.batchRepo.save(batch);
+      if (!(await this.saveProgress(batch, runToken))) return;
 
-      // Si todas las sesiones se cayeron, no tiene sentido seguir con pausas
       if (activeSessions.length === 0) {
-        this.logger.error(
-          `Lote ${batchId} abortado: todas las sesiones se desconectaron`,
-        );
         batch.status = 'FAILED';
         batch.currentSessionId = '';
         await this.batchRepo.save(batch);
+        this.logger.error(
+          `Lote ${batchId} abortado: todas las sesiones se desconectaron`,
+        );
         return;
       }
 
-      // Aplicar pausas
+      const delay =
+        messagesInCurrentBatch >= batchSize
+          ? longPauseMs
+          : delayBetweenMessagesMs;
       if (messagesInCurrentBatch >= batchSize) {
         this.logger.log(
           `Pausa larga de ${longPauseMs}ms después de ${batchSize} mensajes`,
         );
-        await new Promise((r) => setTimeout(r, longPauseMs));
         messagesInCurrentBatch = 0;
-      } else {
-        await new Promise((r) => setTimeout(r, delayBetweenMessagesMs));
       }
+      if (!(await this.waitWhileRunning(batchId, runToken, delay))) return;
     }
 
-    batch.status = 'COMPLETED';
-    batch.currentSessionId = '';
-    await this.batchRepo.save(batch);
+    const current = await this.batchRepo.findOneBy({ id: batchId });
+    if (
+      !current ||
+      current.status !== 'PROCESSING' ||
+      (current.runToken ?? null) !== (runToken ?? null)
+    ) {
+      return;
+    }
+    current.status = 'COMPLETED';
+    current.currentSessionId = '';
+    await this.batchRepo.save(current);
     this.logger.log(
-      `Lote ${batchId} completado. Enviados: ${batch.sent}, Fallidos: ${batch.failed}, Inválidos: ${batch.invalid}`,
+      `Lote ${batchId} completado. Enviados: ${current.sent}, Fallidos: ${current.failed}, Inválidos: ${current.invalid}`,
     );
   }
 }

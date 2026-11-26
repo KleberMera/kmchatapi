@@ -27,7 +27,20 @@ export class BulkBatch {
     batchSize: number;
     longPauseMs: number;
     verifyDelayMs: number;
+    verifyNumbers?: boolean;
   };
+
+  @Column({ type: 'varchar', nullable: true })
+  runToken: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  videoKey: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  videoMimeType: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  videoFileName: string | null;
 
   // Contadores para el frontend
   @Column({ default: 0 }) total: number;
@@ -36,7 +49,7 @@ export class BulkBatch {
   @Column({ default: 0 }) failed: number;
   @Column({ default: 0 }) invalid: number;
 
-  // Estado del lote: 'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'
+  // Estado del lote: 'PENDING', 'PROCESSING', 'PAUSED', 'COMPLETED', 'FAILED'
   @Column({ default: 'PENDING' })
   status: string;
 

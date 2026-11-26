@@ -11,7 +11,10 @@ export class BulkProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<{ batchId: string }>): Promise<void> {
-    await this.bulkSenderService.processBatch(job.data.batchId);
+  async process(job: Job<{ batchId: string; runToken?: string }>): Promise<void> {
+    await this.bulkSenderService.processBatch(
+      job.data.batchId,
+      job.data.runToken,
+    );
   }
 }

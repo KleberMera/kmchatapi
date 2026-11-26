@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor.js';
 import { HttpExceptionFilter } from './common/interceptors/http-exception.filter.js';
-import { ValidationPipe } from '@nestjs/common';
 
 const envPath = fileURLToPath(new URL('../.env', import.meta.url));
 if (existsSync(envPath)) {
@@ -11,6 +11,32 @@ if (existsSync(envPath)) {
 }
 
 const { AppModule } = await import('./app.module.js');
+
+const processLogger = new Logger('Process');
+process.on('unhandledRejection', (reason: unknown) => {
+  const error =
+    reason instanceof Error ? reason : new Error(String(reason));
+  const isTransientWhatsAppNavigationError =
+    error.message.includes(
+      'Execution context was destroyed, most likely because of a navigation',
+    ) && error.stack?.includes('whatsapp-web.js');
+
+  if (isTransientWhatsAppNavigationError) {
+    processLogger.error(
+      `Rechazo transitorio de Puppeteer durante navegación de WhatsApp: ${error.message}`,
+      error.stack,
+    );
+    return;
+  }
+
+  processLogger.error(
+    `Rechazo de promesa no controlado: ${error.message}`,
+    error.stack,
+  );
+  setImmediate(() => {
+    throw reason;
+  });
+});
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);

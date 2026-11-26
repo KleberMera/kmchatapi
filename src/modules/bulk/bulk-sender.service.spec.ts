@@ -3,6 +3,7 @@ import { BulkSenderService } from './bulk-sender.service.js';
 import { BulkBatch } from './entities/bulk-batch.entity.js';
 import { BulkMessageLog } from './entities/bulk-message-log.entity.js';
 import { SessionManagerService } from '../whatsapp/session-manager.service.js';
+import { BulkMediaStorage } from './bulk-media.storage.js';
 
 describe('BulkSenderService', () => {
   it('rotates sessions after each sent message, including across batch pauses', async () => {
@@ -65,6 +66,7 @@ describe('BulkSenderService', () => {
       batchRepo as unknown as Repository<BulkBatch>,
       logRepo as unknown as Repository<BulkMessageLog>,
       sessionManager,
+      { read: vi.fn() } as unknown as BulkMediaStorage,
     );
 
     await service.processBatch('batch-1');
@@ -124,5 +126,106 @@ describe('BulkSenderService', () => {
         status: 'SENT',
       },
     ]);
+  });
+
+  it('sends without checking the recipient when verification is disabled', async () => {
+    const batch = {
+      id: 'batch-no-verify',
+      status: 'PENDING',
+      runToken: null,
+      config: {
+        sessionIds: ['session-a'],
+        recipients: [{ phone: '111' }],
+        message: 'Hello',
+        delayBetweenMessagesMs: 0,
+        batchSize: 1,
+        longPauseMs: 0,
+        verifyDelayMs: 0,
+        verifyNumbers: false,
+      },
+      sent: 0,
+      failed: 0,
+      invalid: 0,
+      processed: 0,
+      currentSessionId: '',
+    } as BulkBatch;
+    const batchRepo = {
+      findOneBy: vi.fn().mockResolvedValue(batch),
+      save: vi.fn().mockResolvedValue(batch),
+    };
+    const logRepo = { save: vi.fn().mockResolvedValue(undefined) };
+    const sessionManagerMock = {
+      clients: new Map([['session-a', {}]]),
+      getSessionDetails: vi.fn().mockResolvedValue(new Map()),
+      verifyNumber: vi.fn(),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new BulkSenderService(
+      batchRepo as unknown as Repository<BulkBatch>,
+      logRepo as unknown as Repository<BulkMessageLog>,
+      sessionManagerMock as unknown as SessionManagerService,
+      { read: vi.fn() } as unknown as BulkMediaStorage,
+    );
+
+    await service.processBatch(batch.id);
+
+    expect(sessionManagerMock.verifyNumber).not.toHaveBeenCalled();
+    expect(sessionManagerMock.sendMessage).toHaveBeenCalledWith(
+      'session-a',
+      '111',
+      'Hello',
+    );
+    expect(batch.status).toBe('COMPLETED');
+    expect(logRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'SENT', phoneNumber: '111' }),
+    );
+  });
+
+  it('finishes the current message and preserves PAUSED status', async () => {
+    const batch = {
+      id: 'batch-pause',
+      status: 'PENDING',
+      runToken: null,
+      config: {
+        sessionIds: ['session-a'],
+        recipients: [{ phone: '111' }, { phone: '222' }],
+        message: 'Hello',
+        delayBetweenMessagesMs: 0,
+        batchSize: 2,
+        longPauseMs: 0,
+        verifyDelayMs: 0,
+        verifyNumbers: false,
+      },
+      sent: 0,
+      failed: 0,
+      invalid: 0,
+      processed: 0,
+      currentSessionId: '',
+    } as BulkBatch;
+    const batchRepo = {
+      findOneBy: vi.fn().mockResolvedValue(batch),
+      save: vi.fn().mockResolvedValue(batch),
+    };
+    const logRepo = { save: vi.fn().mockResolvedValue(undefined) };
+    const sessionManagerMock = {
+      clients: new Map([['session-a', {}]]),
+      getSessionDetails: vi.fn().mockResolvedValue(new Map()),
+      sendMessage: vi.fn(async () => {
+        batch.status = 'PAUSED';
+      }),
+    };
+    const service = new BulkSenderService(
+      batchRepo as unknown as Repository<BulkBatch>,
+      logRepo as unknown as Repository<BulkMessageLog>,
+      sessionManagerMock as unknown as SessionManagerService,
+      { read: vi.fn() } as unknown as BulkMediaStorage,
+    );
+
+    await service.processBatch(batch.id);
+
+    expect(sessionManagerMock.sendMessage).toHaveBeenCalledTimes(1);
+    expect(batch.processed).toBe(1);
+    expect(batch.sent).toBe(1);
+    expect(batch.status).toBe('PAUSED');
   });
 });

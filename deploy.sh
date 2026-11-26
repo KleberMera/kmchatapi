@@ -11,6 +11,11 @@ git fetch --all
 git pull
 
 echo ""
+echo "Preparando almacenamiento de videos..."
+export BULK_MEDIA_DIR="${BULK_MEDIA_DIR:-$HOME/masivawsp/bulk-media}"
+mkdir -p "$BULK_MEDIA_DIR"
+
+echo ""
 echo "Instalando dependencias..."
 npm install
 
@@ -26,7 +31,7 @@ fi
 
 echo ""
 echo "Reiniciando PM2..."
-pm2 restart kmchat-api
+pm2 restart kmchat-api --update-env
 
 echo ""
 echo "Guardando configuración de PM2..."

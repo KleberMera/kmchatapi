@@ -2,6 +2,7 @@
 /dist
 /node_modules
 /build
+/bulk-media
 
 # TypeScript build cache
 *.tsbuildinfo

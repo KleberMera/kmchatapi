@@ -1,28 +1,103 @@
 import {
+  BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Delete,
   Get,
+  Logger,
   NotFoundException,
   Param,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { randomUUID } from 'node:crypto';
 import { BulkBatch } from './entities/bulk-batch.entity.js';
 import { BulkMessageLog } from './entities/bulk-message-log.entity.js';
+import { BulkMediaStorage } from './bulk-media.storage.js';
+
+type BulkStartRequest = BulkBatch['config'];
+type UploadedVideo = {
+  buffer: Buffer;
+  originalname: string;
+  mimetype: string;
+};
+
+const MAX_VIDEO_SIZE = 16 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parseStartRequest(body: unknown): BulkStartRequest {
+  let value = body;
+  if (isRecord(body) && typeof body.config === 'string') {
+    try {
+      value = JSON.parse(body.config) as unknown;
+    } catch {
+      throw new BadRequestException('La configuración del lote no es válida');
+    }
+  }
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.sessionIds) ||
+    value.sessionIds.length === 0 ||
+    !value.sessionIds.every((id) => typeof id === 'string') ||
+    !Array.isArray(value.recipients) ||
+    value.recipients.length === 0 ||
+    !value.recipients.every(
+      (recipient) =>
+        isRecord(recipient) && typeof recipient.phone === 'string',
+    ) ||
+    typeof value.message !== 'string' ||
+    typeof value.delayBetweenMessagesMs !== 'number' ||
+    typeof value.batchSize !== 'number' ||
+    typeof value.longPauseMs !== 'number' ||
+    typeof value.verifyDelayMs !== 'number' ||
+    !Number.isFinite(value.delayBetweenMessagesMs) ||
+    !Number.isInteger(value.batchSize) ||
+    value.batchSize < 1 ||
+    !Number.isFinite(value.longPauseMs) ||
+    !Number.isFinite(value.verifyDelayMs) ||
+    value.delayBetweenMessagesMs < 0 ||
+    value.longPauseMs < 0 ||
+    value.verifyDelayMs < 0 ||
+    (value.verifyNumbers !== undefined &&
+      typeof value.verifyNumbers !== 'boolean')
+  ) {
+    throw new BadRequestException('La configuración del lote no es válida');
+  }
+
+  return {
+    sessionIds: value.sessionIds,
+    recipients: value.recipients,
+    message: value.message,
+    delayBetweenMessagesMs: value.delayBetweenMessagesMs,
+    batchSize: value.batchSize,
+    longPauseMs: value.longPauseMs,
+    verifyDelayMs: value.verifyDelayMs,
+    verifyNumbers: value.verifyNumbers ?? true,
+  };
+}
 
 @Controller('bulk')
 export class BulkController {
+  private readonly logger = new Logger(BulkController.name);
+
   constructor(
     @InjectQueue('bulk-send') private readonly bulkQueue: Queue,
     @InjectRepository(BulkBatch)
     private readonly batchRepo: Repository<BulkBatch>,
     @InjectRepository(BulkMessageLog)
     private readonly logRepo: Repository<BulkMessageLog>,
+    private readonly mediaStorage: BulkMediaStorage,
   ) {}
 
   // ============================================================
@@ -39,40 +114,71 @@ export class BulkController {
   //   batchSize: number,                       // Mensajes antes de pausa larga
   //   longPauseMs: number,                     // Duración pausa larga (ms)
   //   verifyDelayMs: number                    // Pausa entre verificaciones (ms)
+  //   verifyNumbers?: boolean                  // Verificar antes de enviar (por defecto true)
+  //   video?: archivo de video opcional        // Máximo 16 MB, se envía como caption
   // }
   // ============================================================
   @Post('start')
+  @UseInterceptors(
+    FileInterceptor('video', {
+      limits: {
+        fileSize: MAX_VIDEO_SIZE,
+        fieldSize: 16 * 1024 * 1024,
+        files: 1,
+      },
+      fileFilter: (_request, file, callback) => {
+        if (!file.mimetype.startsWith('video/')) {
+          callback(new BadRequestException('El archivo adjunto debe ser un video'), false);
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
   async start(
-    @Body()
-    body: {
-      sessionIds: string[];
-      recipients: Array<{ phone: string; [key: string]: string }>;
-      message: string;
-      delayBetweenMessagesMs: number;
-      batchSize: number;
-      longPauseMs: number;
-      verifyDelayMs: number;
-    },
+    @Body() body: unknown,
+    @UploadedFile() video?: UploadedVideo,
   ) {
+    const config = parseStartRequest(body);
+    if (video && video.buffer.length === 0) {
+      throw new BadRequestException('El video adjunto está vacío');
+    }
+    if (video && video.buffer.length > MAX_VIDEO_SIZE) {
+      throw new BadRequestException('El video no puede superar los 16 MB');
+    }
+    const runToken = randomUUID();
+    const videoKey = video ? await this.mediaStorage.save(video.buffer) : null;
+
     // 1. Creamos el registro en la BD con estado PENDING
     const batch = this.batchRepo.create({
-      config: body,
-      total: body.recipients.length,
+      config,
+      runToken,
+      videoKey,
+      videoMimeType: video?.mimetype ?? null,
+      videoFileName:
+        video?.originalname.split(/[\\/]/).pop()?.slice(0, 255) ?? null,
+      total: config.recipients.length,
       status: 'PENDING',
     });
-    await this.batchRepo.save(batch);
+    try {
+      await this.batchRepo.save(batch);
+    } catch (error: unknown) {
+      if (videoKey) {
+        try {
+          await this.mediaStorage.remove(videoKey);
+        } catch (cleanupError: unknown) {
+          const message =
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError);
+          this.logger.error(`No se pudo limpiar el video ${videoKey}: ${message}`);
+        }
+      }
+      throw error;
+    }
 
     // 2. Encolamos el trabajo en BullMQ. Se ejecutará en segundo plano.
-    //    attempts: 3 → si el worker falla, reintenta hasta 3 veces
-    //    backoff: exponential → espera 5s, 10s, 20s entre reintentos
-    await this.bulkQueue.add(
-      'send-batch',
-      { batchId: batch.id },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
-      },
-    );
+    await this.enqueueBatch(batch.id, runToken);
 
     // 3. Respondemos inmediatamente con el ID del lote
     return {
@@ -81,6 +187,51 @@ export class BulkController {
       status: batch.status,
       message: 'Envío masivo iniciado en segundo plano',
     };
+  }
+
+  private enqueueBatch(batchId: string, runToken: string) {
+    return this.bulkQueue.add(
+      'send-batch',
+      { batchId, runToken },
+      {
+        jobId: `bulk-${batchId}-${runToken}`,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+      },
+    );
+  }
+
+  @Post(':batchId/pause')
+  async pause(@Param('batchId') batchId: string) {
+    const batch = await this.batchRepo.findOneBy({ id: batchId });
+    if (!batch) throw new NotFoundException('Lote no encontrado');
+    if (batch.status === 'PAUSED') return { batchId, status: batch.status };
+    if (batch.status !== 'PENDING' && batch.status !== 'PROCESSING') {
+      throw new ConflictException('Solo se puede pausar un lote activo');
+    }
+
+    batch.status = 'PAUSED';
+    await this.batchRepo.save(batch);
+    return { batchId, status: batch.status };
+  }
+
+  @Post(':batchId/restart')
+  async restart(@Param('batchId') batchId: string) {
+    const batch = await this.batchRepo.findOneBy({ id: batchId });
+    if (!batch) throw new NotFoundException('Lote no encontrado');
+
+    const runToken = randomUUID();
+    batch.runToken = runToken;
+    batch.status = 'PENDING';
+    batch.processed = 0;
+    batch.sent = 0;
+    batch.failed = 0;
+    batch.invalid = 0;
+    batch.currentSessionId = '';
+    await this.batchRepo.save(batch);
+    await this.logRepo.delete({ batchId });
+    await this.enqueueBatch(batch.id, runToken);
+    return { batchId, status: batch.status, message: 'Lote reiniciado' };
   }
 
   // ============================================================
@@ -137,7 +288,7 @@ export class BulkController {
   @Get('status/:batchId')
   async getStatus(@Param('batchId') batchId: string) {
     const batch = await this.batchRepo.findOneBy({ id: batchId });
-    if (!batch) throw new Error('Lote no encontrado');
+    if (!batch) throw new NotFoundException('Lote no encontrado');
 
     const progress =
       batch.total > 0 ? Math.round((batch.processed / batch.total) * 100) : 0;
@@ -165,10 +316,12 @@ export class BulkController {
   @Get(':batchId')
   async findOne(@Param('batchId') batchId: string) {
     const batch = await this.batchRepo.findOneBy({ id: batchId });
-    if (!batch) throw new Error('Lote no encontrado');
+    if (!batch) throw new NotFoundException('Lote no encontrado');
 
+    const { runToken: _runToken, videoKey: _videoKey, ...details } = batch;
     return {
-      ...batch,
+      ...details,
+      hasVideo: Boolean(batch.videoFileName),
       progress:
         batch.total > 0 ? Math.round((batch.processed / batch.total) * 100) : 0,
     };
@@ -214,6 +367,7 @@ export class BulkController {
     if (!batch) throw new NotFoundException('Lote no encontrado');
     // Al borrar el batch, los logs se borran en cascada por onDelete: 'CASCADE'
     await this.batchRepo.remove(batch);
+    if (batch.videoKey) await this.mediaStorage.remove(batch.videoKey);
     return { deleted: true, batchId };
   }
 
@@ -222,13 +376,30 @@ export class BulkController {
   // Opcional: ?status=FAILED para borrar solo los fallidos.
   @Delete()
   async removeAll(@Query('status') status?: string) {
+    const batches = await this.batchRepo.find({
+      ...(status ? { where: { status } } : {}),
+      select: { id: true, videoKey: true },
+    });
+
+    let deleted: number | string;
     if (status) {
       // Borrar solo los de un estado específico
       const result = await this.batchRepo.delete({ status });
-      return { deleted: result.affected ?? 0, filter: { status } };
+      deleted = result.affected ?? 0;
+    } else {
+      // clear() vacía la tabla
+      await this.batchRepo.clear();
+      deleted = 'all';
     }
-    // Borrar todos
-    const result = await this.batchRepo.clear(); // clear() vacía la tabla
-    return { deleted: 'all', message: 'Todos los lotes eliminados' };
+
+    for (const batch of batches) {
+      if (batch.videoKey) await this.mediaStorage.remove(batch.videoKey);
+    }
+    return {
+      deleted,
+      ...(status
+        ? { filter: { status } }
+        : { message: 'Todos los lotes eliminados' }),
+    };
   }
 }

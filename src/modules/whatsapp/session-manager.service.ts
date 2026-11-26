@@ -15,7 +15,7 @@ import { SESSION_STATUS } from '../../common/constants/status.constants.js';
 // whatsapp-web.js es CommonJS. Al importarlo como namespace en ESM,
 // las clases pueden estar en el nivel superior o dentro de .default.
 const wwjs = (whatsappWeb as any).default ?? whatsappWeb;
-const { Client, LocalAuth } = wwjs;
+const { Client, LocalAuth, MessageMedia } = wwjs;
 
 // Tipos tomados del namespace para no usar el valor desestructurado como tipo
 type WAClient = whatsappWeb.Client;
@@ -384,6 +384,36 @@ export class SessionManagerService implements OnModuleInit {
 
     await client.sendMessage(chatId, message);
     this.logger.log(`Mensaje enviado desde ${sessionId} a ${chatId}`);
+  }
+
+  async sendVideo(
+    sessionId: string,
+    phone: string,
+    message: string,
+    video: {
+      data: string;
+      mimetype: string;
+      filename: string;
+      filesize: number;
+    },
+  ): Promise<void> {
+    const client = this.clients.get(sessionId);
+    if (!client) {
+      throw new Error(`La sesión ${sessionId} no está conectada o no existe`);
+    }
+
+    const digits = phone.replace(/\D/g, '');
+    if (!digits) throw new Error('Número inválido');
+    const media = new MessageMedia(
+      video.mimetype,
+      video.data,
+      video.filename,
+      video.filesize,
+    );
+    const chatId = `${digits}@c.us`;
+
+    await client.sendMessage(chatId, media, { caption: message });
+    this.logger.log(`Video enviado desde ${sessionId} a ${chatId}`);
   }
 
   // Elimina una sesión: cierra el cliente, borra la carpeta de auth y el registro en BD.
