@@ -291,9 +291,12 @@ export class BulkSenderService {
         } catch (error: unknown) {
           const errorMessage =
             error instanceof Error ? error.message : String(error);
+          const errorDetails =
+            error instanceof Error ? (error.stack ?? error.message) : errorMessage;
           if (!(await this.hasCurrentRun(batchId, runToken))) return;
           this.logger.error(
-            `Error enviando a ${phone} con ${sessionId}: ${errorMessage}`,
+            `Error enviando a ${phone} con ${sessionId}${video ? ` (video ${video.filename}, ${video.mimetype}, ${video.filesize} bytes)` : ''}: ${errorMessage}`,
+            error instanceof Error ? error.stack : undefined,
           );
           await this.logRepo.save({
             batchId,
@@ -303,7 +306,7 @@ export class BulkSenderService {
               sessionDetails.get(sessionId)?.phoneNumber ?? null,
             sessionName: sessionDetails.get(sessionId)?.name ?? null,
             status: 'FAILED',
-            errorMessage,
+            errorMessage: errorDetails,
           });
           attemptLogged = true;
 

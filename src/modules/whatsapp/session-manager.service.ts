@@ -412,7 +412,7 @@ export class SessionManagerService implements OnModuleInit {
     );
     const chatId = `${digits}@c.us`;
 
-    await client.sendMessage(chatId, media, { caption: message });
+    await client.sendMessage(chatId, message, { media });
     this.logger.log(`Video enviado desde ${sessionId} a ${chatId}`);
   }
 

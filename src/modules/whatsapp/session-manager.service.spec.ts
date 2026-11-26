@@ -19,12 +19,14 @@ describe('SessionManagerService', () => {
 
     expect(sendMessage).toHaveBeenCalledWith(
       '593999000001@c.us',
-      expect.objectContaining({
-        mimetype: 'video/mp4',
-        data: 'Y2xpcA==',
-        filename: 'promo.mp4',
-      }),
-      { caption: 'Caption' },
+      'Caption',
+      {
+        media: expect.objectContaining({
+          mimetype: 'video/mp4',
+          data: 'Y2xpcA==',
+          filename: 'promo.mp4',
+        }),
+      },
     );
   });
 
