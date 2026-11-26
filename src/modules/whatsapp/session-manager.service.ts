@@ -335,19 +335,24 @@ export class SessionManagerService implements OnModuleInit {
     };
   }
 
-  async getSessionPhoneNumbers(
+  async getSessionDetails(
     sessionIds: string[],
-  ): Promise<Map<string, string | null>> {
+  ): Promise<
+    Map<string, { phoneNumber: string | null; name: string | null }>
+  > {
     const sessions = await this.sessionRepo.find({
       where: { sessionId: In(sessionIds) },
-      select: { sessionId: true, phoneNumber: true },
+      select: { sessionId: true, phoneNumber: true, name: true },
     });
 
     return new Map(
       sessions.map(
-        ({ sessionId, phoneNumber }): [string, string | null] => [
+        ({ sessionId, phoneNumber, name }): [
+          string,
+          { phoneNumber: string | null; name: string | null },
+        ] => [
           sessionId,
-          phoneNumber ?? null,
+          { phoneNumber: phoneNumber ?? null, name: name ?? null },
         ],
       ),
     );

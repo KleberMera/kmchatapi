@@ -39,10 +39,16 @@ describe('BulkSenderService', () => {
         ['session-a', {}],
         ['session-b', {}],
       ]),
-      getSessionPhoneNumbers: vi.fn().mockResolvedValue(
+      getSessionDetails: vi.fn().mockResolvedValue(
         new Map([
-          ['session-a', '593991111111'],
-          ['session-b', '593992222222'],
+          [
+            'session-a',
+            { phoneNumber: '593991111111', name: 'Sesion A' },
+          ],
+          [
+            'session-b',
+            { phoneNumber: '593992222222', name: 'Sesion B' },
+          ],
         ]),
       ),
       verifyNumber: vi
@@ -81,6 +87,7 @@ describe('BulkSenderService', () => {
         phoneNumber: '111',
         sessionId: 'session-a',
         sessionPhoneNumber: '593991111111',
+        sessionName: 'Sesion A',
         status: 'FAILED',
         errorMessage: 'Error de verificación: sendIq called before startComms',
       },
@@ -89,6 +96,7 @@ describe('BulkSenderService', () => {
         phoneNumber: '111',
         sessionId: 'session-b',
         sessionPhoneNumber: '593992222222',
+        sessionName: 'Sesion B',
         status: 'SENT',
       },
       {
@@ -96,6 +104,7 @@ describe('BulkSenderService', () => {
         phoneNumber: '222',
         sessionId: 'session-a',
         sessionPhoneNumber: '593991111111',
+        sessionName: 'Sesion A',
         status: 'SENT',
       },
       {
@@ -103,6 +112,7 @@ describe('BulkSenderService', () => {
         phoneNumber: '333',
         sessionId: 'session-b',
         sessionPhoneNumber: '593992222222',
+        sessionName: 'Sesion B',
         status: 'SENT',
       },
       {
@@ -110,6 +120,7 @@ describe('BulkSenderService', () => {
         phoneNumber: '444',
         sessionId: 'session-a',
         sessionPhoneNumber: '593991111111',
+        sessionName: 'Sesion A',
         status: 'SENT',
       },
     ]);

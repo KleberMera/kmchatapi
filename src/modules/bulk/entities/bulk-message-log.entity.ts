@@ -31,6 +31,10 @@ export class BulkMessageLog {
   @Column({ type: 'varchar', nullable: true })
   sessionPhoneNumber: string | null;
 
+  // Nombre visible de la sesión que realizó el intento.
+  @Column({ type: 'varchar', nullable: true })
+  sessionName: string | null;
+
   // Estado: 'SENT', 'FAILED', 'INVALID'
   @Column()
   status: string;

@@ -70,8 +70,8 @@ export class BulkSenderService {
       await this.batchRepo.save(batch);
       throw new Error('No hay sesiones activas para procesar el lote');
     }
-    const sessionPhoneNumbers =
-      await this.sessionManager.getSessionPhoneNumbers(activeSessions);
+    const sessionDetails =
+      await this.sessionManager.getSessionDetails(activeSessions);
 
     let currentSessionIndex = 0;
     let messagesInCurrentBatch = 0;
@@ -140,7 +140,9 @@ export class BulkSenderService {
             batchId,
             phoneNumber: phone,
             sessionId,
-            sessionPhoneNumber: sessionPhoneNumbers.get(sessionId) ?? null,
+            sessionPhoneNumber:
+              sessionDetails.get(sessionId)?.phoneNumber ?? null,
+            sessionName: sessionDetails.get(sessionId)?.name ?? null,
             status: 'FAILED',
             errorMessage: `Error de verificación: ${errorMessage}`,
           });
@@ -163,7 +165,9 @@ export class BulkSenderService {
             batchId,
             phoneNumber: phone,
             sessionId,
-            sessionPhoneNumber: sessionPhoneNumbers.get(sessionId) ?? null,
+            sessionPhoneNumber:
+              sessionDetails.get(sessionId)?.phoneNumber ?? null,
+            sessionName: sessionDetails.get(sessionId)?.name ?? null,
             status: 'INVALID',
             errorMessage: 'Número no registrado en WhatsApp',
           });
@@ -188,7 +192,9 @@ export class BulkSenderService {
             batchId,
             phoneNumber: phone,
             sessionId,
-            sessionPhoneNumber: sessionPhoneNumbers.get(sessionId) ?? null,
+            sessionPhoneNumber:
+              sessionDetails.get(sessionId)?.phoneNumber ?? null,
+            sessionName: sessionDetails.get(sessionId)?.name ?? null,
             status: 'SENT',
           });
           batch.sent++;
@@ -202,7 +208,9 @@ export class BulkSenderService {
             batchId,
             phoneNumber: phone,
             sessionId,
-            sessionPhoneNumber: sessionPhoneNumbers.get(sessionId) ?? null,
+            sessionPhoneNumber:
+              sessionDetails.get(sessionId)?.phoneNumber ?? null,
+            sessionName: sessionDetails.get(sessionId)?.name ?? null,
             status: 'FAILED',
             errorMessage: error.message,
           });
