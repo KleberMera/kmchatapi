@@ -12,14 +12,7 @@ git pull
 
 echo ""
 echo "Preparando almacenamiento de videos..."
-export BULK_MEDIA_DIR="${BULK_MEDIA_DIR:-$HOME/masivawsp/bulk-media}"
-mkdir -p "$BULK_MEDIA_DIR"
-export PUPPETEER_EXECUTABLE_PATH="${PUPPETEER_EXECUTABLE_PATH:-/usr/bin/google-chrome-stable}"
-if [ ! -x "$PUPPETEER_EXECUTABLE_PATH" ]; then
-    echo "❌ No se encontró Chrome ejecutable en $PUPPETEER_EXECUTABLE_PATH."
-    echo "Instala Google Chrome o configura PUPPETEER_EXECUTABLE_PATH antes del despliegue."
-    exit 1
-fi
+mkdir -p bulk-media
 
 echo ""
 echo "Instalando dependencias..."

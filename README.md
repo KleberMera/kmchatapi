@@ -60,12 +60,11 @@ $ npm run test:cov
 ## Deployment
 
 Bulk message videos are stored on disk, not in PostgreSQL. Local development uses
-`bulk-media` in the API working directory. On the Ubuntu server, `deploy.sh` creates
-`$HOME/masivawsp/bulk-media` and passes it to PM2 through `BULK_MEDIA_DIR`. Keep this
-directory on persistent storage and include it in server backups.
-On Ubuntu, video sending also requires Google Chrome with media codecs installed.
-`deploy.sh` configures `/usr/bin/google-chrome-stable` through
-`PUPPETEER_EXECUTABLE_PATH`; override the variable if Chrome is installed elsewhere.
+`bulk-media` in the API working directory in both development and production. The
+application creates this directory when it first stores a video, and `deploy.sh`
+also prepares it. Keep this project directory on persistent storage and include it
+in server backups. WhatsApp sessions use Puppeteer's default browser executable;
+no `PUPPETEER_EXECUTABLE_PATH` configuration is needed.
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
 

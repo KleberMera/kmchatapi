@@ -5,9 +5,7 @@ import { join, resolve, sep } from 'node:path';
 
 @Injectable()
 export class BulkMediaStorage {
-  private readonly directory = resolve(
-    process.env.BULK_MEDIA_DIR ?? resolve(process.cwd(), 'bulk-media'),
-  );
+  private readonly directory = resolve(process.cwd(), 'bulk-media');
 
   async save(data: Buffer): Promise<string> {
     await mkdir(this.directory, { recursive: true });
